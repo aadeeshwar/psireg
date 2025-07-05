@@ -5,11 +5,13 @@ load, and storage assets with uniform interfaces for simulation integration.
 """
 
 from .base import Asset
+from .battery import Battery
 from .solar import SolarPanel
 from .wind import WindTurbine
 
 __all__ = [
     "Asset",
+    "Battery",
     "SolarPanel",
     "WindTurbine",
 ]
