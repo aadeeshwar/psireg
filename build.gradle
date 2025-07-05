@@ -1,0 +1,330 @@
+plugins {
+    id 'base'
+}
+
+description = 'Predictive Swarm Intelligence for Renewable Energy Grids'
+version = '0.1.0'
+
+// Define directories
+def srcDir = 'src'
+def testsDir = 'tests'
+def docsDir = 'docs'
+def buildDir = 'build'
+def htmlCovDir = 'htmlcov'
+
+// Helper function to execute poetry commands
+def poetryExec(String command) {
+    def args = ['poetry', 'run']
+    args.addAll(command.split(' '))
+    exec {
+        commandLine args
+        environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+    }
+}
+
+def poetryExecCatch(String command) {
+    try {
+        def args = ['poetry', 'run']
+        args.addAll(command.split(' '))
+        exec {
+            commandLine args
+            environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+        }
+        return true
+    } catch (Exception e) {
+        // Check if it's a pytest "no tests collected" error (exit code 5)
+        if (e.toString().contains('finished with non-zero exit value 5')) {
+            logger.info("No tests found for: poetry run ${command}")
+            return true
+        }
+        logger.warn("Command failed: poetry run ${command}")
+        return false
+    }
+}
+
+// Install dependencies
+task install(type: Exec) {
+    group = 'setup'
+    description = 'Install project dependencies using Poetry'
+    commandLine 'poetry', 'install'
+    environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+}
+
+// Code formatting
+task fmt {
+    group = 'formatting'
+    description = 'Format code using black'
+    dependsOn install
+    doLast {
+        poetryExec("black ${srcDir} ${testsDir}")
+    }
+}
+
+task fmtCheck {
+    group = 'formatting'
+    description = 'Check code formatting using black'
+    dependsOn install
+    doLast {
+        poetryExec("black --check ${srcDir} ${testsDir}")
+    }
+}
+
+// Linting
+task lint {
+    group = 'quality'
+    description = 'Run linting using ruff'
+    dependsOn install
+    doLast {
+        poetryExec("ruff check ${srcDir} ${testsDir}")
+    }
+}
+
+task lintFix {
+    group = 'quality'
+    description = 'Run linting and fix issues using ruff'
+    dependsOn install
+    doLast {
+        poetryExec("ruff check --fix ${srcDir} ${testsDir}")
+    }
+}
+
+// Type checking
+task type {
+    group = 'quality'
+    description = 'Run type checking using mypy'
+    dependsOn install
+    doLast {
+        poetryExec("mypy ${srcDir}")
+    }
+}
+
+// Testing
+task testUnit {
+    group = 'testing'
+    description = 'Run unit tests'
+    dependsOn install
+    doLast {
+        try {
+            def args = ['poetry', 'run', 'pytest', '-m', 'unit', testsDir]
+            exec {
+                commandLine args
+                environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+            }
+        } catch (Exception e) {
+            if (!e.toString().contains('finished with non-zero exit value 5')) {
+                throw e
+            }
+            logger.info("No unit tests found")
+        }
+    }
+}
+
+task testIntegration {
+    group = 'testing'
+    description = 'Run integration tests'
+    dependsOn install
+    doLast {
+        try {
+            def args = ['poetry', 'run', 'pytest', '-m', 'integration', testsDir]
+            exec {
+                commandLine args
+                environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+            }
+        } catch (Exception e) {
+            if (!e.toString().contains('finished with non-zero exit value 5')) {
+                throw e
+            }
+            logger.info("No integration tests found")
+        }
+    }
+}
+
+task testAcceptance {
+    group = 'testing'
+    description = 'Run acceptance tests'
+    dependsOn install
+    doLast {
+        try {
+            def args = ['poetry', 'run', 'pytest', '-m', 'acceptance', testsDir]
+            exec {
+                commandLine args
+                environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+            }
+        } catch (Exception e) {
+            if (!e.toString().contains('finished with non-zero exit value 5')) {
+                throw e
+            }
+            logger.info("No acceptance tests found")
+        }
+    }
+}
+
+task test {
+    group = 'testing'
+    description = 'Run all tests'
+    dependsOn install
+    doLast {
+        try {
+            def args = ['poetry', 'run', 'pytest', testsDir]
+            exec {
+                commandLine args
+                environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+            }
+        } catch (Exception e) {
+            if (!e.toString().contains('finished with non-zero exit value 5')) {
+                throw e
+            }
+            logger.info("No tests found")
+        }
+    }
+}
+
+// Coverage
+task cov {
+    group = 'testing'
+    description = 'Run tests with coverage reporting'
+    dependsOn install
+    doLast {
+        try {
+            def args = ['poetry', 'run', 'pytest', "--cov=${srcDir}", '--cov-report=html', '--cov-report=term-missing', testsDir]
+            exec {
+                commandLine args
+                environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+            }
+        } catch (Exception e) {
+            if (!e.toString().contains('finished with non-zero exit value 5')) {
+                throw e
+            }
+            logger.info("No tests found for coverage")
+        }
+    }
+}
+
+task covReport {
+    group = 'testing'
+    description = 'Generate coverage report'
+    dependsOn cov
+    doLast {
+        println "Coverage report generated in ${htmlCovDir}/index.html"
+    }
+}
+
+// Documentation
+task docsInit {
+    group = 'documentation'
+    description = 'Initialize Sphinx documentation'
+    dependsOn install
+    doLast {
+        mkdir docsDir
+        exec {
+            workingDir docsDir
+            commandLine 'poetry', 'run', 'sphinx-quickstart', '--quiet', '--project', 'psireg', 
+                        '--author', 'Aadeeshwar Pathak', '--release', '0.1.0', '--language', 'en', 
+                        '--suffix', '.rst', '--master', 'index', '--epub', '--makefile', 
+                        '--batchfile', '--sep', '.'
+            environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+        }
+    }
+}
+
+task docs {
+    group = 'documentation'
+    description = 'Generate documentation using Sphinx'
+    dependsOn install
+    doLast {
+        if (!file(docsDir).exists()) {
+            dependsOn docsInit
+        }
+        exec {
+            workingDir docsDir
+            commandLine 'poetry', 'run', 'sphinx-build', '-b', 'html', 'source', 'build'
+            environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+        }
+    }
+}
+
+// Build
+task buildProject {
+    group = 'build'
+    description = 'Build the project'
+    dependsOn install, fmt, lint, type, test
+    doLast {
+        exec {
+            commandLine 'poetry', 'build'
+            environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+        }
+    }
+}
+
+// Override the default build task to use our buildProject
+build.dependsOn buildProject
+
+// Clean
+task cleanProject {
+    group = 'build'
+    description = 'Clean build artifacts'
+    doLast {
+        delete buildDir
+        delete htmlCovDir
+        delete 'dist'
+        delete '.pytest_cache'
+        delete '.mypy_cache'
+        delete '.ruff_cache'
+        delete '.coverage'
+        fileTree('.').matching {
+            include '**/__pycache__'
+            include '**/*.pyc'
+            include '**/*.pyo'
+        }.each { delete it }
+    }
+}
+
+// Override the default clean task to use our cleanProject
+clean.dependsOn cleanProject
+
+// Quality check task (runs all quality checks)
+task checkProject {
+    group = 'verification'
+    description = 'Run all quality checks'
+    dependsOn fmt, lint, type, test
+}
+
+// Override the default check task to use our checkProject
+check.dependsOn checkProject
+
+// Development setup
+task dev {
+    group = 'development'
+    description = 'Set up development environment'
+    dependsOn install
+    doLast {
+        println "Development environment ready!"
+        println "Available tasks:"
+        println "  - fmt: Format code"
+        println "  - lint: Run linting"
+        println "  - type: Run type checking"
+        println "  - test: Run tests"
+        println "  - cov: Run tests with coverage"
+        println "  - build: Build the project"
+        println "  - docs: Generate documentation"
+        println "  - check: Run all quality checks"
+    }
+}
+
+// Default task
+defaultTasks 'dev'
+
+// Task dependencies for CI/CD
+task ci {
+    group = 'ci'
+    description = 'Run CI pipeline'
+    dependsOn cleanProject, install, fmtCheck, lint, type, cov, buildProject
+}
+
+// Configure task execution order
+fmtCheck.shouldRunAfter cleanProject
+lint.shouldRunAfter fmtCheck
+type.shouldRunAfter lint
+test.shouldRunAfter type
+cov.shouldRunAfter type
+buildProject.shouldRunAfter cov 
