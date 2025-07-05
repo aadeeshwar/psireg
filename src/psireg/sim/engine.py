@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from psireg.config.schema import GridConfig, SimulationConfig
 from psireg.sim.assets.base import Asset
-from psireg.utils.enums import AssetType
+from psireg.utils.enums import AssetStatus, AssetType
 from psireg.utils.logger import logger  # type: ignore
 from psireg.utils.types import MW, Hz, Timestamp, kV
 
@@ -490,6 +490,90 @@ class GridEngine:
             List of assets connected to the node
         """
         return [asset for asset in self.assets.values() if asset.node_id == node_id]
+
+    def remove_asset(self, asset_id: str) -> Asset | None:
+        """Remove an asset from the simulation.
+
+        Args:
+            asset_id: Unique identifier of the asset to remove
+
+        Returns:
+            Removed asset if found, None otherwise
+        """
+        removed_asset = self.assets.pop(asset_id, None)
+        if removed_asset:
+            logger.debug(f"Removed asset: {removed_asset}")
+        return removed_asset
+
+    def add_assets(self, assets: list[Asset]) -> None:
+        """Add multiple assets to the simulation.
+
+        Args:
+            assets: List of assets to add
+
+        Raises:
+            ValueError: If any asset with same ID already exists or max assets exceeded
+        """
+        # Check if we would exceed the limit
+        if len(self.assets) + len(assets) > self.simulation_config.max_assets:
+            raise ValueError(
+                f"Adding {len(assets)} assets would exceed maximum limit ({self.simulation_config.max_assets})"
+            )
+
+        # Check for duplicate IDs
+        for asset in assets:
+            if asset.asset_id in self.assets:
+                raise ValueError(f"Asset with ID '{asset.asset_id}' already exists")
+
+        # Add all assets
+        for asset in assets:
+            self.assets[asset.asset_id] = asset
+
+        logger.debug(f"Added {len(assets)} assets to simulation")
+
+    def get_all_assets(self) -> list[Asset]:
+        """Get all assets in the simulation.
+
+        Returns:
+            List of all assets
+        """
+        return list(self.assets.values())
+
+    def clear_assets(self) -> None:
+        """Remove all assets from the simulation."""
+        asset_count = len(self.assets)
+        self.assets.clear()
+        logger.debug(f"Cleared {asset_count} assets from simulation")
+
+    def get_assets_by_status(self, status: AssetStatus) -> list[Asset]:
+        """Get all assets with a specific status.
+
+        Args:
+            status: Asset status to filter by
+
+        Returns:
+            List of assets with the specified status
+        """
+        return [asset for asset in self.assets.values() if asset.status == status]
+
+    def get_assets_by_capacity_range(self, min_mw: float | None = None, max_mw: float | None = None) -> list[Asset]:
+        """Get all assets within a specific capacity range.
+
+        Args:
+            min_mw: Minimum capacity in MW (inclusive), None for no lower bound
+            max_mw: Maximum capacity in MW (inclusive), None for no upper bound
+
+        Returns:
+            List of assets within the capacity range
+        """
+        result = []
+        for asset in self.assets.values():
+            if min_mw is not None and asset.capacity_mw < min_mw:
+                continue
+            if max_mw is not None and asset.capacity_mw > max_mw:
+                continue
+            result.append(asset)
+        return result
 
     def get_grid_summary(self) -> dict[str, Any]:
         """Get a summary of the current grid state.

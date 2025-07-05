@@ -5,6 +5,7 @@ common asset types and interfaces.
 """
 
 from abc import ABC
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -96,7 +97,70 @@ class Asset(BaseModel, ABC):
         Args:
             power_mw: Power output in MW (negative for loads)
         """
+        # Clamp power output to capacity limits for generation assets
+        if power_mw > 0 and not self.is_load():
+            power_mw = min(power_mw, self.capacity_mw)
+        elif power_mw < 0 and self.is_load():
+            # For loads, limit negative power to capacity
+            power_mw = max(power_mw, -self.capacity_mw)
+
         self.current_output_mw = power_mw
+
+    def get_state(self) -> dict[str, Any]:
+        """Get comprehensive state information for the asset.
+
+        This method provides a uniform interface for accessing asset state
+        across all asset types.
+
+        Returns:
+            Dictionary containing complete asset state
+        """
+        return {
+            "asset_id": self.asset_id,
+            "asset_type": self.asset_type,
+            "name": self.name,
+            "node_id": self.node_id,
+            "capacity_mw": self.capacity_mw,
+            "status": self.status,
+            "current_output_mw": self.current_output_mw,
+            "is_online": self.is_online(),
+            "is_renewable": self.is_renewable(),
+            "is_storage": self.is_storage(),
+            "is_load": self.is_load(),
+            "utilization_percent": self.get_utilization_percent(),
+            "efficiency": self.get_efficiency(),
+        }
+
+    def get_utilization_percent(self) -> float:
+        """Calculate asset utilization as percentage of capacity.
+
+        Returns:
+            Utilization percentage (0-100)
+        """
+        if self.capacity_mw == 0:
+            return 0.0
+
+        # Use absolute value to handle both generation and load assets
+        return (abs(self.current_output_mw) / self.capacity_mw) * 100.0
+
+    def get_efficiency(self) -> float:
+        """Get asset efficiency factor.
+
+        Base implementation returns 1.0 (100% efficiency).
+        Subclasses can override for more realistic efficiency models.
+
+        Returns:
+            Efficiency factor (0.0 to 1.0)
+        """
+        return 1.0
+
+    def reset(self) -> None:
+        """Reset asset to default state.
+
+        Resets status to OFFLINE and power output to 0.
+        """
+        self.status = AssetStatus.OFFLINE
+        self.current_output_mw = 0.0
 
     def is_online(self) -> bool:
         """Check if asset is online and operational.

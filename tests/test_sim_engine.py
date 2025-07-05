@@ -87,6 +87,116 @@ class TestAssetBase:
         asset.set_status(AssetStatus.MAINTENANCE)
         assert asset.status == AssetStatus.MAINTENANCE
 
+    def test_asset_get_state(self):
+        """Test asset get_state method for uniform interface."""
+        asset = Asset(
+            asset_id="test_asset",
+            asset_type=AssetType.SOLAR,
+            name="Test Asset",
+            node_id="node_1",
+            capacity_mw=100.0,
+        )
+        asset.set_status(AssetStatus.ONLINE)
+        asset.set_power_output(75.0)
+
+        state = asset.get_state()
+        assert isinstance(state, dict)
+        assert state["asset_id"] == "test_asset"
+        assert state["asset_type"] == AssetType.SOLAR
+        assert state["name"] == "Test Asset"
+        assert state["node_id"] == "node_1"
+        assert state["capacity_mw"] == 100.0
+        assert state["status"] == AssetStatus.ONLINE
+        assert state["current_output_mw"] == 75.0
+        assert state["is_online"] is True
+        assert state["is_renewable"] is True
+        assert state["utilization_percent"] == 75.0
+
+    def test_asset_utilization_calculation(self):
+        """Test asset utilization percentage calculation."""
+        asset = Asset(
+            asset_id="test_asset",
+            asset_type=AssetType.SOLAR,
+            name="Test Asset",
+            node_id="node_1",
+            capacity_mw=200.0,
+        )
+
+        # Test with no output
+        assert asset.get_utilization_percent() == 0.0
+
+        # Test with 50% output
+        asset.set_power_output(100.0)
+        assert asset.get_utilization_percent() == 50.0
+
+        # Test with 100% output
+        asset.set_power_output(200.0)
+        assert asset.get_utilization_percent() == 100.0
+
+        # Test with negative output (load)
+        asset.set_power_output(-50.0)
+        assert asset.get_utilization_percent() == 25.0
+
+    def test_asset_efficiency_calculation(self):
+        """Test asset efficiency calculation."""
+        asset = Asset(
+            asset_id="test_asset",
+            asset_type=AssetType.SOLAR,
+            name="Test Asset",
+            node_id="node_1",
+            capacity_mw=100.0,
+        )
+
+        # Test default efficiency (should be 1.0 for base class)
+        assert asset.get_efficiency() == 1.0
+
+        # Test with power output
+        asset.set_power_output(80.0)
+        assert asset.get_efficiency() == 1.0  # Base class has no efficiency loss
+
+    def test_asset_reset_method(self):
+        """Test asset reset method."""
+        asset = Asset(
+            asset_id="test_asset",
+            asset_type=AssetType.SOLAR,
+            name="Test Asset",
+            node_id="node_1",
+            capacity_mw=100.0,
+        )
+
+        # Change asset state
+        asset.set_status(AssetStatus.ONLINE)
+        asset.set_power_output(75.0)
+
+        # Reset asset
+        asset.reset()
+
+        # Check that asset is reset to defaults
+        assert asset.status == AssetStatus.OFFLINE
+        assert asset.current_output_mw == 0.0
+
+    def test_asset_power_limits(self):
+        """Test asset power output limits."""
+        asset = Asset(
+            asset_id="test_asset",
+            asset_type=AssetType.SOLAR,
+            name="Test Asset",
+            node_id="node_1",
+            capacity_mw=100.0,
+        )
+
+        # Test within limits
+        asset.set_power_output(50.0)
+        assert asset.current_output_mw == 50.0
+
+        # Test exceeding capacity (should be clamped)
+        asset.set_power_output(150.0)
+        assert asset.current_output_mw <= 100.0
+
+        # Test negative power (allowed for loads)
+        asset.set_power_output(-50.0)
+        assert asset.current_output_mw == -50.0
+
 
 class TestNetworkTopology:
     """Test network topology components."""
@@ -687,6 +797,174 @@ class TestGridEngine:
         # Asset should still be there
         assert "persistent_asset" in engine.assets
         assert engine.assets["persistent_asset"] == asset
+
+    def test_asset_registry_methods(self):
+        """Test enhanced asset registry functionality."""
+        engine = GridEngine(
+            simulation_config=SimulationConfig(),
+            grid_config=GridConfig(),
+        )
+
+        # Add multiple assets
+        solar_asset = Asset(
+            asset_id="solar_1",
+            asset_type=AssetType.SOLAR,
+            name="Solar Farm 1",
+            node_id="node_1",
+            capacity_mw=100.0,
+        )
+        wind_asset = Asset(
+            asset_id="wind_1",
+            asset_type=AssetType.WIND,
+            name="Wind Farm 1",
+            node_id="node_2",
+            capacity_mw=150.0,
+        )
+        battery_asset = Asset(
+            asset_id="battery_1",
+            asset_type=AssetType.BATTERY,
+            name="Battery Storage 1",
+            node_id="node_1",
+            capacity_mw=50.0,
+        )
+
+        engine.add_asset(solar_asset)
+        engine.add_asset(wind_asset)
+        engine.add_asset(battery_asset)
+
+        # Test get_assets_by_type (already exists)
+        solar_assets = engine.get_assets_by_type(AssetType.SOLAR)
+        assert len(solar_assets) == 1
+        assert solar_assets[0] == solar_asset
+
+        # Test get_assets_by_node (already exists)
+        node1_assets = engine.get_assets_by_node("node_1")
+        assert len(node1_assets) == 2
+        assert solar_asset in node1_assets
+        assert battery_asset in node1_assets
+
+        # Test get_asset_by_id (already exists)
+        found_asset = engine.get_asset_by_id("wind_1")
+        assert found_asset == wind_asset
+
+    def test_asset_registry_lifecycle(self):
+        """Test asset registry lifecycle management."""
+        engine = GridEngine(
+            simulation_config=SimulationConfig(),
+            grid_config=GridConfig(),
+        )
+
+        asset = Asset(
+            asset_id="lifecycle_asset",
+            asset_type=AssetType.SOLAR,
+            name="Lifecycle Asset",
+            node_id="node_1",
+            capacity_mw=100.0,
+        )
+
+        # Add asset
+        engine.add_asset(asset)
+        assert "lifecycle_asset" in engine.assets
+
+        # Remove asset (new functionality)
+        removed_asset = engine.remove_asset("lifecycle_asset")
+        assert removed_asset == asset
+        assert "lifecycle_asset" not in engine.assets
+
+        # Try to remove non-existent asset
+        result = engine.remove_asset("non_existent")
+        assert result is None
+
+    def test_asset_registry_bulk_operations(self):
+        """Test bulk operations on asset registry."""
+        engine = GridEngine(
+            simulation_config=SimulationConfig(),
+            grid_config=GridConfig(),
+        )
+
+        assets = [
+            Asset(
+                asset_id=f"asset_{i}",
+                asset_type=AssetType.SOLAR,
+                name=f"Asset {i}",
+                node_id=f"node_{i % 3}",
+                capacity_mw=100.0,
+            )
+            for i in range(5)
+        ]
+
+        # Bulk add assets (new functionality)
+        engine.add_assets(assets)
+        assert len(engine.assets) == 5
+
+        # Get all assets
+        all_assets = engine.get_all_assets()
+        assert len(all_assets) == 5
+        for asset in assets:
+            assert asset in all_assets
+
+        # Clear all assets (new functionality)
+        engine.clear_assets()
+        assert len(engine.assets) == 0
+
+    def test_asset_registry_filtering(self):
+        """Test advanced asset filtering capabilities."""
+        engine = GridEngine(
+            simulation_config=SimulationConfig(),
+            grid_config=GridConfig(),
+        )
+
+        # Add assets with different statuses
+        online_asset = Asset(
+            asset_id="online_asset",
+            asset_type=AssetType.SOLAR,
+            name="Online Asset",
+            node_id="node_1",
+            capacity_mw=100.0,
+        )
+        online_asset.set_status(AssetStatus.ONLINE)
+
+        offline_asset = Asset(
+            asset_id="offline_asset",
+            asset_type=AssetType.WIND,
+            name="Offline Asset",
+            node_id="node_2",
+            capacity_mw=150.0,
+        )
+        offline_asset.set_status(AssetStatus.OFFLINE)
+
+        maintenance_asset = Asset(
+            asset_id="maintenance_asset",
+            asset_type=AssetType.BATTERY,
+            name="Maintenance Asset",
+            node_id="node_3",
+            capacity_mw=50.0,
+        )
+        maintenance_asset.set_status(AssetStatus.MAINTENANCE)
+
+        engine.add_asset(online_asset)
+        engine.add_asset(offline_asset)
+        engine.add_asset(maintenance_asset)
+
+        # Test filtering by status (new functionality)
+        online_assets = engine.get_assets_by_status(AssetStatus.ONLINE)
+        assert len(online_assets) == 1
+        assert online_assets[0] == online_asset
+
+        offline_assets = engine.get_assets_by_status(AssetStatus.OFFLINE)
+        assert len(offline_assets) == 1
+        assert offline_assets[0] == offline_asset
+
+        # Test filtering by capacity range (new functionality)
+        large_assets = engine.get_assets_by_capacity_range(min_mw=100.0)
+        assert len(large_assets) == 2
+        assert online_asset in large_assets
+        assert offline_asset in large_assets
+
+        small_assets = engine.get_assets_by_capacity_range(max_mw=100.0)
+        assert len(small_assets) == 2
+        assert online_asset in small_assets
+        assert maintenance_asset in small_assets
 
 
 class TestEdgeCasesAndErrors:
