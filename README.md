@@ -1,6 +1,8 @@
-# PSI Registry
+# PSIREG - Predictive Swarm Intelligence for Renewable Energy Grids
 
 Predictive Swarm Intelligence for Renewable Energy Grids
+
+A hybrid AI approach combining reinforcement learning predictions with swarm intelligence for optimizing renewable energy grid management.
 
 ## Development Setup
 
