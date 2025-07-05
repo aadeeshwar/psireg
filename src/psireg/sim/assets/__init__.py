@@ -1,12 +1,15 @@
-"""Assets module for PSIREG simulation system.
+"""Asset module for PSIREG renewable energy grid simulation system.
 
-This module provides base classes and implementations for various grid assets
-including renewable generation, storage, and load assets.
+This module provides asset classes for grid components including generation,
+load, and storage assets with uniform interfaces for simulation integration.
 """
 
-from .base import Asset, AssetType
+from .base import Asset
+from .solar import SolarPanel
+from .wind import WindTurbine
 
 __all__ = [
     "Asset",
-    "AssetType",
+    "SolarPanel",
+    "WindTurbine",
 ]
