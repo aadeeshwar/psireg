@@ -50,6 +50,22 @@ task install(type: Exec) {
     environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
 }
 
+// Install visualization dependencies
+task installViz(type: Exec) {
+    group = 'setup'
+    description = 'Install visualization dependencies (pandas, plotly, numpy) using Poetry'
+    commandLine 'poetry', 'add', 'pandas', 'plotly', 'numpy'
+    environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+}
+
+// Install visualization dependencies as optional group
+task installVizOptional(type: Exec) {
+    group = 'setup'
+    description = 'Install visualization dependencies as optional group'
+    commandLine 'poetry', 'add', '--group', 'viz', 'pandas', 'plotly', 'numpy'
+    environment 'REQUESTS_CA_BUNDLE', '/tmp/tesco_ca.pem'
+}
+
 // Code formatting
 task fmt {
     group = 'formatting'
@@ -292,6 +308,30 @@ task checkProject {
 // Override the default check task to use our checkProject
 check.dependsOn checkProject
 
+// Visualization demo
+task vizDemo {
+    group = 'visualization'
+    description = 'Run visualization demo with interactive dashboards'
+    dependsOn install
+    doLast {
+        try {
+            poetryExec("python examples/visualization_demo.py")
+        } catch (Exception e) {
+            logger.warn("Visualization demo failed. Make sure visualization dependencies are installed with: gradle installViz")
+            throw e
+        }
+    }
+}
+
+task realSimDemo {
+    group = 'visualization'
+    description = 'Run real PSIREG simulation demo'
+    dependsOn install
+    doLast {
+        poetryExec("python examples/real_simulation_demo.py")
+    }
+}
+
 // Development setup
 task dev {
     group = 'development'
@@ -308,6 +348,9 @@ task dev {
         println "  - build: Build the project"
         println "  - docs: Generate documentation"
         println "  - check: Run all quality checks"
+        println "  - installViz: Install visualization dependencies"
+        println "  - vizDemo: Run visualization demo"
+        println "  - realSimDemo: Run real simulation demo"
     }
 }
 
