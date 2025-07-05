@@ -5,7 +5,9 @@ coordinate through pheromone-based communication for optimal grid operation.
 """
 
 from .battery_agent import BatteryAgent
+from .demand_agent import DemandAgent
 
 __all__ = [
     "BatteryAgent",
+    "DemandAgent",
 ]
