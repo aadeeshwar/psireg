@@ -13,10 +13,11 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from psireg.sim.assets.load import Load
+from psireg.swarm.pheromone import PheromoneType, SwarmBus
 from psireg.utils.types import MW
 
 if TYPE_CHECKING:
-    pass
+    from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,13 @@ class DemandAgent:
         self.max_shift_hours: int = 4  # Maximum hours to shift load
         self.scheduled_adjustments: dict[int, float] = {}  # Hour -> adjustment factor
 
+        # Energy request parameters
+        self.pending_energy_requests: list[dict[str, Any]] = []  # Active energy requests
+        self.received_energy_responses: list[dict[str, Any]] = []  # Responses from supply agents
+        self.secured_energy_mw: float = 0.0  # Energy secured through requests
+        self.energy_request_threshold: float = 0.6  # Grid stress threshold for requests
+        self.max_request_price_multiplier: float = 2.0  # Max price willing to pay as multiple of current price
+
     def update_grid_conditions(
         self,
         frequency_hz: float,
@@ -120,7 +128,7 @@ class DemandAgent:
 
         # Update local grid stress indicator
         frequency_stress = abs(frequency_deviation) / 0.5  # Normalize to 0.5 Hz range
-        power_stress = abs(power_imbalance) / 100.0  # Normalize to 100 MW range
+        power_stress = abs(power_imbalance) / 50.0  # Normalize to 50 MW range (more sensitive)
         self.local_grid_stress = min(1.0, max(frequency_stress, power_stress))
 
         # Update electricity price in load asset
@@ -410,6 +418,458 @@ class DemandAgent:
         self.neighbor_signals = []
         self.scheduled_adjustments = {}
         self.target_demand_factor = 1.0
+        self.pending_energy_requests = []
+        self.received_energy_responses = []
+        self.secured_energy_mw = 0.0
+
+    # ===============================================
+    # ENERGY REQUEST SYSTEM METHODS
+    # ===============================================
+
+    def broadcast_energy_request(
+        self,
+        energy_needed_mw: float,
+        urgency: str,
+        duration_hours: int,
+        max_price_mwh: float,
+    ) -> bool:
+        """Broadcast energy request via pheromones.
+
+        Args:
+            energy_needed_mw: Amount of energy needed in MW
+            urgency: Request urgency ("high", "normal", "low")
+            duration_hours: Duration of energy need in hours
+            max_price_mwh: Maximum price willing to pay in $/MWh
+
+        Returns:
+            True if request was broadcast successfully
+        """
+        if energy_needed_mw <= 0:
+            return False
+
+        # Create energy request
+        request = {
+            "energy_needed_mw": energy_needed_mw,
+            "urgency": urgency,
+            "duration_hours": duration_hours,
+            "max_price_mwh": max_price_mwh,
+            "timestamp": self.load.current_time if hasattr(self.load, "current_time") else None,
+            "agent_id": self.agent_id,
+        }
+
+        # Add to pending requests
+        self.pending_energy_requests.append(request)
+
+        logger.info(
+            f"Agent {self.agent_id} broadcast energy request: "
+            f"{energy_needed_mw:.1f} MW, urgency={urgency}, max_price=${max_price_mwh:.0f}/MWh"
+        )
+
+        return True
+
+    def calculate_request_pheromone_strength(
+        self,
+        energy_needed_mw: float,
+        urgency: str,
+        grid_stress: float,
+    ) -> float:
+        """Calculate pheromone strength for energy request.
+
+        Args:
+            energy_needed_mw: Amount of energy needed in MW
+            urgency: Request urgency ("high", "normal", "low")
+            grid_stress: Current grid stress level (0-1)
+
+        Returns:
+            Pheromone strength (0.0 to 1.0)
+        """
+        # Base strength from energy need relative to load capacity
+        energy_ratio = energy_needed_mw / max(1.0, self.load.capacity_mw)
+        base_strength = min(1.0, energy_ratio)
+
+        # Urgency multiplier
+        urgency_multipliers = {"high": 1.0, "normal": 0.7, "low": 0.4}
+        urgency_factor = urgency_multipliers.get(urgency, 0.7)
+
+        # Grid stress amplification
+        stress_factor = 1.0 + grid_stress  # 1.0 to 2.0
+
+        # Calculate final strength
+        strength = base_strength * urgency_factor * stress_factor
+
+        return min(1.0, max(0.0, strength))
+
+    def should_request_energy(
+        self,
+        forecast_demand: list[float],
+        forecast_generation: list[float],
+        forecast_prices: list[float],
+    ) -> bool:
+        """Determine if energy should be requested based on forecasts.
+
+        Args:
+            forecast_demand: Forecasted demand in MW
+            forecast_generation: Forecasted generation in MW
+            forecast_prices: Forecasted prices in $/MWh
+
+        Returns:
+            True if energy should be requested
+        """
+        # Check current grid stress - if high stress, always consider requesting
+        if self.local_grid_stress < self.energy_request_threshold:
+            return False
+
+        # If we have high current grid stress, request energy proactively
+        if self.local_grid_stress > 0.8:
+            return True
+
+        # Check if there's an anticipated energy shortage
+        if not forecast_demand or not forecast_generation:
+            # If no forecast data but high grid stress, err on side of requesting
+            return self.local_grid_stress > 0.7
+
+        # Calculate average forecast shortage
+        total_shortage = 0.0
+        shortage_hours = 0
+
+        for i in range(min(len(forecast_demand), len(forecast_generation))):
+            shortage = forecast_demand[i] - forecast_generation[i]
+            if shortage > 0:
+                total_shortage += shortage
+                shortage_hours += 1
+
+        # Request energy if significant shortage is anticipated
+        avg_shortage = total_shortage / max(1, len(forecast_demand))
+        shortage_ratio = avg_shortage / max(1.0, self.load.baseline_demand_mw)
+
+        # Check price trends (increasing prices indicate scarcity)
+        price_trend_rising = False
+        if len(forecast_prices) >= 2:
+            price_trend = forecast_prices[-1] - forecast_prices[0]
+            price_trend_rising = price_trend > 0
+
+        # Request if shortage is significant or prices are rising rapidly or high current stress
+        return (
+            shortage_ratio > 0.1
+            or (price_trend_rising and shortage_ratio > 0.05)
+            or (price_trend_rising and self.local_grid_stress > 0.6)  # Proactive on price rises with stress
+        )
+
+    def calculate_energy_request(
+        self,
+        forecast_demand: list[float],
+        forecast_generation: list[float],
+        forecast_prices: list[float],
+    ) -> dict[str, Any]:
+        """Calculate energy request details.
+
+        Args:
+            forecast_demand: Forecasted demand in MW
+            forecast_generation: Forecasted generation in MW
+            forecast_prices: Forecasted prices in $/MWh
+
+        Returns:
+            Dictionary with energy request details
+        """
+        # Calculate energy shortage
+        total_shortage = 0.0
+        max_shortage = 0.0
+
+        for i in range(min(len(forecast_demand), len(forecast_generation))):
+            shortage = max(0, forecast_demand[i] - forecast_generation[i])
+            total_shortage += shortage
+            max_shortage = max(max_shortage, shortage)
+
+        # Calculate energy needed (base it on our own demand and shortage severity)
+        if total_shortage > 0:
+            # Calculate as a fraction of our DR capability based on shortage severity
+            shortage_severity = min(1.0, total_shortage / max(1.0, sum(forecast_demand)))
+            energy_needed = shortage_severity * self.load.dr_capability_mw * 0.8  # Use 80% of DR capability
+        else:
+            # If no forecast shortage, consider current grid stress and other factors
+            if self.local_grid_stress > 0.8:
+                # High stress: request significant energy
+                energy_needed = self.local_grid_stress * self.load.dr_capability_mw * 0.6
+            elif self.local_grid_stress > 0.3:
+                # Moderate stress: request smaller amount proactively
+                energy_needed = self.local_grid_stress * self.load.dr_capability_mw * 0.3
+            else:
+                energy_needed = 0.0
+
+        # Ensure minimum meaningful request
+        if energy_needed > 0 and energy_needed < self.load.dr_capability_mw * 0.1:
+            energy_needed = self.load.dr_capability_mw * 0.1  # At least 10% of DR capability
+
+        # Determine urgency based on grid stress and shortage severity
+        if self.local_grid_stress > 0.8 or max_shortage > self.load.baseline_demand_mw:
+            urgency = "high"
+        elif self.local_grid_stress > 0.6 or max_shortage > self.load.baseline_demand_mw * 0.5:
+            urgency = "normal"
+        else:
+            urgency = "low"
+
+        # Duration based on forecast length
+        duration_hours = min(len(forecast_demand), 4)  # Max 4 hours
+
+        # Maximum price willing to pay
+        current_price = getattr(self.load, "current_price", 50.0)
+        max_price = current_price * self.max_request_price_multiplier
+
+        return {
+            "energy_needed_mw": energy_needed,
+            "urgency": urgency,
+            "duration_hours": duration_hours,
+            "max_price_mwh": max_price,
+        }
+
+    def process_energy_responses(self, energy_responses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Process energy responses and create matches.
+
+        Args:
+            energy_responses: List of energy responses from supply agents
+
+        Returns:
+            List of matched energy transactions
+        """
+        matches = []
+        remaining_requests = self.pending_energy_requests.copy()
+
+        for response in energy_responses:
+            if not remaining_requests:
+                break
+
+            # Find best matching request
+            best_request = None
+            best_score = -1.0
+
+            for request in remaining_requests:
+                # Calculate match score
+                energy_match = min(response["can_provide_mw"], request["energy_needed_mw"]) / max(
+                    1.0, request["energy_needed_mw"]
+                )
+
+                price_acceptable = response["estimated_cost_mwh"] <= request["max_price_mwh"]
+
+                if price_acceptable:
+                    score = energy_match * response["response_priority"]
+                    if score > best_score:
+                        best_score = score
+                        best_request = request
+
+            # Create match if suitable request found
+            if best_request and best_score > 0.3:  # Minimum match threshold
+                agreed_energy = min(response["can_provide_mw"], best_request["energy_needed_mw"])
+
+                match = {
+                    "supplier_agent_id": response["agent_id"],
+                    "agreed_energy_mw": agreed_energy,
+                    "agreed_price_mwh": response["estimated_cost_mwh"],
+                    "duration_hours": min(response["response_duration_hours"], best_request["duration_hours"]),
+                    "urgency": best_request["urgency"],
+                }
+
+                matches.append(match)
+                remaining_requests.remove(best_request)
+
+                # Update secured energy
+                self.secured_energy_mw += agreed_energy
+
+        return matches
+
+    def execute_energy_coordination(
+        self,
+        swarm_bus: SwarmBus | None,
+        forecast_demand: list[float],
+        forecast_generation: list[float],
+        forecast_prices: list[float],
+    ) -> dict[str, Any]:
+        """Execute complete energy coordination protocol.
+
+        Args:
+            swarm_bus: Swarm bus for coordination (None for standalone)
+            forecast_demand: Forecasted demand in MW
+            forecast_generation: Forecasted generation in MW
+            forecast_prices: Forecasted prices in $/MWh
+
+        Returns:
+            Coordination result dictionary
+        """
+        requests_sent = 0
+        responses_received = 0
+        energy_secured = 0.0
+
+        # Check if energy request is needed
+        if self.should_request_energy(forecast_demand, forecast_generation, forecast_prices):
+            # Calculate energy request
+            request_details = self.calculate_energy_request(forecast_demand, forecast_generation, forecast_prices)
+
+            # Broadcast energy request
+            if self.broadcast_energy_request(**request_details):
+                requests_sent = 1
+
+                # Deposit pheromone if swarm bus is available
+                if swarm_bus:
+                    pheromone_type = (
+                        PheromoneType.ENERGY_REQUEST_HIGH
+                        if request_details["urgency"] == "high"
+                        else PheromoneType.ENERGY_REQUEST_NORMAL
+                    )
+
+                    strength = self.calculate_request_pheromone_strength(
+                        request_details["energy_needed_mw"],
+                        request_details["urgency"],
+                        self.local_grid_stress,
+                    )
+
+                    swarm_bus.deposit_pheromone(
+                        agent_id=self.agent_id, pheromone_type=pheromone_type, strength=strength
+                    )
+
+        # Calculate demand response incorporating secured energy
+        demand_response = self._calculate_demand_response_with_secured_energy()
+
+        return {
+            "requests_sent": requests_sent,
+            "responses_received": responses_received,
+            "energy_secured_mw": energy_secured,
+            "demand_response_mw": demand_response,
+        }
+
+    def calculate_enhanced_demand_response(
+        self,
+        forecast_demand: list[float],
+        forecast_generation: list[float],
+        forecast_prices: list[float],
+        secured_energy_mw: float = 0.0,
+    ) -> dict[str, Any]:
+        """Calculate enhanced demand response incorporating energy request logic.
+
+        Args:
+            forecast_demand: Forecasted demand in MW
+            forecast_generation: Forecasted generation in MW
+            forecast_prices: Forecasted prices in $/MWh
+            secured_energy_mw: Energy secured through requests in MW
+
+        Returns:
+            Enhanced demand response dictionary
+        """
+        # Calculate traditional demand response
+        traditional_response = (
+            self.calculate_optimal_demand(
+                forecast_prices, forecast_generation, [self.local_grid_stress] * len(forecast_prices)
+            )
+            - self.load.baseline_demand_mw
+        )
+
+        # Calculate request-based adjustment (reduction in demand response)
+        request_based_adjustment = 0.0
+        if secured_energy_mw > 0:
+            # If energy is secured, calculate reduction factor for demand response
+            # The secured energy provides a buffer, so less DR is needed
+            energy_security_factor = min(1.0, secured_energy_mw / self.load.dr_capability_mw)
+            request_based_adjustment = -(traditional_response * energy_security_factor * 0.5)  # Negative = reduction
+
+        # Calculate total response (traditional + request-based adjustment)
+        # Note: request_based_adjustment is negative when energy is secured (reduction)
+        total_response = traditional_response + request_based_adjustment
+
+        # Calculate confidence based on grid conditions and energy security
+        grid_condition_clarity = abs(self.local_grid_stress - 0.5) * 2  # 0 to 1
+        energy_security_factor = min(1.0, secured_energy_mw / max(1.0, self.load.dr_capability_mw))
+        confidence = (grid_condition_clarity + energy_security_factor) / 2
+
+        return {
+            "demand_adjustment_mw": self.load.baseline_demand_mw + total_response,
+            "request_based_adjustment_mw": request_based_adjustment,
+            "traditional_response_mw": traditional_response,
+            "total_response_mw": total_response,
+            "confidence": confidence,
+        }
+
+    def generate_primary_demand_response(
+        self,
+        forecast_demand: list[float],
+        forecast_generation: list[float],
+        forecast_prices: list[float],
+        swarm_bus: SwarmBus | None = None,
+    ) -> dict[str, Any]:
+        """Generate primary demand response output incorporating energy request logic.
+
+        This is the main method that produces the primary output as requested:
+        "Primary output is: Demand response"
+
+        Args:
+            forecast_demand: Forecasted demand in MW
+            forecast_generation: Forecasted generation in MW
+            forecast_prices: Forecasted prices in $/MWh
+            swarm_bus: Optional swarm bus for coordination
+
+        Returns:
+            Primary demand response output dictionary
+        """
+        # Execute energy coordination if swarm bus is available
+        coordination_result = self.execute_energy_coordination(
+            swarm_bus, forecast_demand, forecast_generation, forecast_prices
+        )
+
+        # Calculate enhanced demand response
+        enhanced_response = self.calculate_enhanced_demand_response(
+            forecast_demand, forecast_generation, forecast_prices, self.secured_energy_mw
+        )
+
+        # Generate coordination signals
+        coordination_signals = {
+            "energy_request_signal": self.pheromone_strength,
+            "grid_support_signal": self.get_coordination_signal(),
+            "local_stress_signal": self.local_grid_stress,
+        }
+
+        # Calculate action priority
+        action_priority = self._calculate_action_priority()
+
+        # PRIMARY OUTPUT: Demand Response
+        primary_output = {
+            "demand_response_mw": enhanced_response["total_response_mw"],  # PRIMARY OUTPUT
+            "energy_requests_sent": coordination_result["requests_sent"],
+            "energy_secured_mw": coordination_result["energy_secured_mw"],
+            "coordination_signals": coordination_signals,
+            "response_confidence": enhanced_response["confidence"],
+            "action_priority": action_priority,
+        }
+
+        return primary_output
+
+    def _calculate_demand_response_with_secured_energy(self) -> float:
+        """Calculate demand response accounting for secured energy."""
+        # Base demand response
+        base_response = self._calculate_frequency_response()
+
+        # Adjustment for secured energy
+        if self.secured_energy_mw > 0:
+            # Can reduce demand response if energy is secured
+            secured_energy_factor = min(1.0, self.secured_energy_mw / self.load.dr_capability_mw)
+            base_response *= 1.0 - secured_energy_factor * 0.5
+
+        return base_response
+
+    def _calculate_action_priority(self) -> float:
+        """Calculate action priority for demand response.
+
+        Returns:
+            Priority value (0.0 to 1.0)
+        """
+        # Higher priority for:
+        # 1. High grid stress
+        # 2. High electricity prices
+        # 3. Low secured energy
+
+        stress_factor = self.local_grid_stress
+        price_factor = min(1.0, getattr(self.load, "current_price", 50.0) / 100.0)  # Normalize to $100/MWh
+        energy_security_factor = 1.0 - min(1.0, self.secured_energy_mw / max(1.0, self.load.dr_capability_mw))
+
+        priority = (stress_factor + price_factor + energy_security_factor) / 3
+
+        return min(1.0, max(0.0, priority))
 
     def __str__(self) -> str:
         """String representation of demand agent."""

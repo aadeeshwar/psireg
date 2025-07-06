@@ -34,6 +34,8 @@ class PheromoneType(Enum):
     COORDINATION = "coordination"
     EMERGENCY_RESPONSE = "emergency_response"
     RENEWABLE_CURTAILMENT = "renewable_curtailment"
+    ENERGY_REQUEST_HIGH = "energy_request_high"
+    ENERGY_REQUEST_NORMAL = "energy_request_normal"
 
 
 @dataclass

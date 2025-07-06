@@ -820,6 +820,135 @@ class BatteryAgent:
         self.pheromone_memory.clear()
         self.pheromone_gradients.clear()
 
+    # ===============================================
+    # ENERGY REQUEST RESPONSE METHODS
+    # ===============================================
+
+    def detect_energy_requests(self, swarm_bus: Any) -> list[dict[str, Any]]:
+        """Detect energy request pheromones in the neighborhood.
+
+        Args:
+            swarm_bus: Swarm bus for pheromone field access
+
+        Returns:
+            List of detected energy requests
+        """
+        detected_requests = []
+
+        # Check for energy request pheromones in neighborhood
+        for pheromone_type in [PheromoneType.ENERGY_REQUEST_HIGH, PheromoneType.ENERGY_REQUEST_NORMAL]:
+            neighborhood_pheromones = swarm_bus.get_neighborhood_pheromones(
+                agent_id=self.agent_id, pheromone_type=pheromone_type, radius=2
+            )
+
+            for position, strength in neighborhood_pheromones:
+                if strength > 0.1:  # Minimum detectable strength
+                    # Get agent positions to find requesting agent
+                    nearby_agents = swarm_bus.get_agent_positions_in_radius(center=position, radius=1.0)
+
+                    for agent_position, agent_id in nearby_agents:
+                        if agent_position == position and agent_id != self.agent_id:
+                            request = {
+                                "agent_id": agent_id,
+                                "position": position,
+                                "pheromone_type": pheromone_type,
+                                "strength": strength,
+                                "distance": self._calculate_distance_to_position(position, swarm_bus),
+                                # Mock some request details (in real system, this would come from agent communication)
+                                "energy_needed_mw": strength * 20.0,  # Estimate based on strength
+                                "max_price_mwh": 150.0,  # Default max price
+                                "urgency": "high" if pheromone_type == PheromoneType.ENERGY_REQUEST_HIGH else "normal",
+                            }
+                            detected_requests.append(request)
+
+        return detected_requests
+
+    def calculate_energy_response(self, energy_requests: list[dict[str, Any]]) -> dict[str, Any]:
+        """Calculate response to energy requests.
+
+        Args:
+            energy_requests: List of energy requests to respond to
+
+        Returns:
+            Energy response dictionary
+        """
+        if not energy_requests:
+            return {
+                "can_provide_mw": 0.0,
+                "response_priority": 0.0,
+                "estimated_cost_mwh": 0.0,
+                "response_duration_hours": 0.0,
+            }
+
+        # Calculate available energy capacity
+        current_soc = self.battery.current_soc_percent
+        min_soc = 20.0  # Don't discharge below 20%
+        available_energy_mwh = max(0.0, (current_soc - min_soc) / 100.0 * self.battery.energy_capacity_mwh)
+
+        # Convert to power capacity (assume 1-hour discharge)
+        max_discharge_power = self.battery.get_max_discharge_power()
+        can_provide_mw = min(available_energy_mwh, max_discharge_power)
+
+        # Calculate response priority based on multiple factors
+        # 1. Battery readiness (SoC and health)
+        soc_readiness = min(1.0, (current_soc - 50.0) / 50.0) if current_soc > 50.0 else 0.0
+        health_readiness = self.battery.current_health_percent / 100.0
+
+        # 2. Grid support value
+        grid_stress_factor = self.local_grid_stress
+
+        # 3. Economic incentive
+        electricity_price = getattr(self, "electricity_price", 50.0)
+        price_incentive = min(1.0, electricity_price / 100.0)  # Normalize to $100/MWh
+
+        # 4. Request urgency (prioritize high urgency requests)
+        urgency_factor = 0.9 if any(req["urgency"] == "high" for req in energy_requests) else 0.6
+
+        # Combine factors
+        response_priority = (
+            0.3 * soc_readiness
+            + 0.2 * health_readiness
+            + 0.2 * grid_stress_factor
+            + 0.2 * price_incentive
+            + 0.1 * urgency_factor
+        )
+
+        # Calculate estimated cost
+        base_cost = electricity_price
+        service_premium = 20.0  # Premium for providing grid service
+        urgency_premium = 30.0 if urgency_factor > 0.8 else 10.0
+        estimated_cost = base_cost + service_premium + urgency_premium
+
+        # Response duration based on available energy
+        response_duration = min(4.0, available_energy_mwh / max(0.1, can_provide_mw))
+
+        return {
+            "agent_id": self.agent_id,
+            "can_provide_mw": can_provide_mw,
+            "response_priority": response_priority,
+            "estimated_cost_mwh": estimated_cost,
+            "response_duration_hours": response_duration,
+        }
+
+    def _calculate_distance_to_position(self, position: Any, swarm_bus: Any) -> float:
+        """Calculate distance to a grid position.
+
+        Args:
+            position: Grid position
+            swarm_bus: Swarm bus for position lookup
+
+        Returns:
+            Distance to position
+        """
+        # Get our position from swarm bus
+        agent_info = swarm_bus.get_agent_info(self.agent_id)
+        if agent_info and "position" in agent_info:
+            our_position = agent_info["position"]
+            dx = position.x - our_position.x
+            dy = position.y - our_position.y
+            return (dx * dx + dy * dy) ** 0.5
+        return 0.0
+
     def __str__(self) -> str:
         """String representation of the battery agent."""
         return (
