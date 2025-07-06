@@ -3,16 +3,20 @@
 This module provides the BatteryAgent class that implements intelligent coordination
 strategies for battery storage systems in the distributed grid using swarm intelligence
 principles like pheromone-based communication and local optimization.
+
+Enhanced with voltage triggers, enhanced pheromone sensitivity, and local stabilization
+signal generation as the primary output for grid stability.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from psireg.sim.assets.battery import Battery
+from psireg.swarm.pheromone import PheromoneType
 from psireg.utils.types import MW, MWh
 
 if TYPE_CHECKING:
@@ -42,11 +46,13 @@ class BatteryAgent:
     This agent implements intelligent control strategies for battery storage systems
     including:
     - Grid frequency regulation
+    - Voltage trigger-based local stabilization
     - Peak shaving and load leveling
     - Renewable energy smoothing
     - Emergency grid support
     - Economic optimization
-    - Swarm coordination through pheromone-like signals
+    - Enhanced swarm coordination through pheromone-like signals
+    - Local stabilization as primary output
     """
 
     def __init__(
@@ -56,6 +62,9 @@ class BatteryAgent:
         communication_range: float = 5.0,
         response_time_s: float = 1.0,
         coordination_weight: float = 0.3,
+        voltage_deadband_v: float = 10.0,
+        voltage_trigger_sensitivity: float = 0.5,
+        voltage_regulation_weight: float = 0.4,
     ):
         """Initialize battery storage agent.
 
@@ -65,12 +74,22 @@ class BatteryAgent:
             communication_range: Communication range for swarm coordination
             response_time_s: Response time for control actions in seconds
             coordination_weight: Weight for coordination vs local optimization (0-1)
+            voltage_deadband_v: Voltage deadband in volts for trigger activation
+            voltage_trigger_sensitivity: Voltage trigger sensitivity (0-1)
+            voltage_regulation_weight: Weight for voltage regulation in optimization (0-1)
         """
         self.battery = battery
         self.agent_id = agent_id or battery.asset_id
         self.communication_range = communication_range
         self.response_time_s = response_time_s
         self.coordination_weight = coordination_weight
+
+        # Voltage trigger parameters
+        self.voltage_deadband_v = voltage_deadband_v
+        self.voltage_trigger_sensitivity = voltage_trigger_sensitivity
+        self.voltage_regulation_weight = voltage_regulation_weight
+        self.nominal_voltage_v = battery.nominal_voltage_v
+        self.current_voltage_kv = 0.8  # Default grid voltage in kV
 
         # Control parameters
         self.target_soc_percent: float = 50.0
@@ -83,6 +102,28 @@ class BatteryAgent:
         self.local_grid_stress: float = 0.0
         self.coordination_signal: float = 0.0
         self.neighbor_signals: list[float] = []
+
+        # Enhanced pheromone sensitivity
+        self.pheromone_sensitivity_types: dict[PheromoneType, float] = {
+            PheromoneType.FREQUENCY_SUPPORT: 0.8,
+            PheromoneType.COORDINATION: 0.6,
+            PheromoneType.RENEWABLE_CURTAILMENT: 0.4,
+            PheromoneType.DEMAND_REDUCTION: 0.5,
+            PheromoneType.EMERGENCY_RESPONSE: 0.9,
+            PheromoneType.ECONOMIC_SIGNAL: 0.3,
+        }
+        self.pheromone_response_weights: dict[PheromoneType, float] = {
+            PheromoneType.FREQUENCY_SUPPORT: 0.4,
+            PheromoneType.COORDINATION: 0.3,
+            PheromoneType.RENEWABLE_CURTAILMENT: 0.2,
+            PheromoneType.DEMAND_REDUCTION: 0.1,
+            PheromoneType.EMERGENCY_RESPONSE: 0.5,
+            PheromoneType.ECONOMIC_SIGNAL: 0.15,
+        }
+        self.pheromone_decay_factor: float = 0.95
+        self.pheromone_gradient_threshold: float = 0.1
+        self.pheromone_memory: dict[PheromoneType, float] = {}
+        self.pheromone_gradients: dict[PheromoneType, float] = {}
 
         # Economic parameters
         self.electricity_price: float = 50.0  # $/MWh
@@ -105,7 +146,17 @@ class BatteryAgent:
             local_load_mw: Local load in MW
             local_generation_mw: Local generation in MW
             electricity_price: Current electricity price in $/MWh
+
+        Raises:
+            ValueError: If frequency is negative
         """
+        if frequency_hz < 0:
+            raise ValueError("Frequency cannot be negative")
+
+        # Store current voltage and frequency for calculations
+        self.current_voltage_kv = voltage_kv
+        self.current_frequency_hz = frequency_hz
+
         # Calculate frequency deviation
         nominal_frequency = 60.0  # Hz
         frequency_deviation = frequency_hz - nominal_frequency
@@ -116,11 +167,404 @@ class BatteryAgent:
         # Update local grid stress indicator
         frequency_stress = abs(frequency_deviation) / 0.5  # Normalize to 0.5 Hz range
         power_stress = abs(power_imbalance) / 100.0  # Normalize to 100 MW range
-        self.local_grid_stress = min(1.0, max(frequency_stress, power_stress))
+        voltage_stress = abs(self.calculate_voltage_deviation()) / (
+            self.voltage_deadband_v * 3 / 1000.0
+        )  # Normalize with 3x deadband
+
+        self.local_grid_stress = min(1.0, max(frequency_stress, power_stress, voltage_stress))
 
         # Update electricity price
         if electricity_price is not None:
             self.electricity_price = electricity_price
+
+    def calculate_voltage_deviation(self) -> float:
+        """Calculate voltage deviation from nominal in kV.
+
+        Returns:
+            Voltage deviation in kV
+        """
+        nominal_kv = self.nominal_voltage_v / 1000.0  # Convert to kV
+        return self.current_voltage_kv - nominal_kv
+
+    def calculate_voltage_response(self) -> MW:
+        """Calculate power response for voltage regulation.
+
+        Returns:
+            Power adjustment in MW for voltage support
+        """
+        voltage_deviation = self.calculate_voltage_deviation()
+        deadband_kv = self.voltage_deadband_v / 1000.0  # Convert to kV
+
+        # Check if within deadband
+        if abs(voltage_deviation) <= deadband_kv:
+            return 0.0
+
+        # Calculate response magnitude
+        deviation_magnitude = abs(voltage_deviation) - deadband_kv
+        response_magnitude = deviation_magnitude * self.voltage_trigger_sensitivity
+
+        # Scale by battery capacity
+        max_response = self.battery.capacity_mw * 0.5  # Limit to 50% of capacity
+        voltage_response = response_magnitude * max_response * 10  # Scale factor
+
+        # Determine direction: high voltage -> charge (positive), low voltage -> discharge (negative)
+        if voltage_deviation > deadband_kv:
+            # High voltage - charge to absorb reactive power
+            voltage_response = min(voltage_response, self.battery.get_max_charge_power())
+        else:
+            # Low voltage - discharge to provide reactive power
+            voltage_response = -min(voltage_response, self.battery.get_max_discharge_power())
+
+        return voltage_response
+
+    def update_pheromone_gradients(self, gradients: dict[PheromoneType, float]) -> None:
+        """Update pheromone gradients from swarm coordination.
+
+        Args:
+            gradients: Dictionary of pheromone type to gradient values
+        """
+        # Update memory with decay
+        for pheromone_type in self.pheromone_memory:
+            self.pheromone_memory[pheromone_type] *= self.pheromone_decay_factor
+
+        # Update with new gradients
+        for pheromone_type, gradient in gradients.items():
+            self.pheromone_gradients[pheromone_type] = gradient
+            self.pheromone_memory[pheromone_type] = gradient
+
+    def calculate_pheromone_response(self, pheromone_type: PheromoneType) -> MW:
+        """Calculate power response for specific pheromone type.
+
+        Args:
+            pheromone_type: Type of pheromone to respond to
+
+        Returns:
+            Power adjustment in MW for pheromone coordination
+        """
+        if pheromone_type not in self.pheromone_gradients:
+            return 0.0
+
+        gradient = self.pheromone_gradients[pheromone_type]
+
+        # Check threshold
+        if abs(gradient) < self.pheromone_gradient_threshold:
+            return 0.0
+
+        # Get sensitivity and response weight for this pheromone type
+        sensitivity = self.pheromone_sensitivity_types.get(pheromone_type, 0.5)
+        weight = self.pheromone_response_weights.get(pheromone_type, 0.3)
+
+        # Calculate response based on pheromone type
+        if pheromone_type == PheromoneType.FREQUENCY_SUPPORT:
+            # Frequency support: provide grid frequency regulation
+            response = gradient * sensitivity * weight * self.battery.capacity_mw
+        elif pheromone_type == PheromoneType.EMERGENCY_RESPONSE:
+            # Emergency response: immediate action required
+            response = gradient * sensitivity * weight * self.battery.capacity_mw * 1.2
+        elif pheromone_type == PheromoneType.COORDINATION:
+            # Coordination: follow swarm behavior
+            response = gradient * sensitivity * weight * self.battery.capacity_mw * 0.5
+        elif pheromone_type == PheromoneType.RENEWABLE_CURTAILMENT:
+            # Renewable curtailment: charge when renewables are curtailed
+            response = gradient * sensitivity * weight * self.battery.capacity_mw * 0.3
+        elif pheromone_type == PheromoneType.ECONOMIC_SIGNAL:
+            # Economic signal: optimize based on price signals
+            response = gradient * sensitivity * weight * self.battery.capacity_mw * 0.4
+        else:
+            # Default response (including DEMAND_REDUCTION)
+            response = gradient * sensitivity * weight * self.battery.capacity_mw * 0.2
+
+        return response
+
+    def calculate_combined_pheromone_response(self) -> MW:
+        """Calculate combined pheromone response from all types.
+
+        Returns:
+            Combined power adjustment in MW
+        """
+        total_response = 0.0
+
+        for pheromone_type in self.pheromone_gradients:
+            response = self.calculate_pheromone_response(pheromone_type)
+            total_response += response
+
+        # Limit to battery capacity
+        max_charge = self.battery.get_max_charge_power()
+        max_discharge = self.battery.get_max_discharge_power()
+
+        if total_response > 0:
+            total_response = min(total_response, max_charge)
+        else:
+            total_response = max(total_response, -max_discharge)
+
+        return total_response
+
+    def update_neighbor_pheromone_strengths(self, neighbor_strengths: dict[PheromoneType, list[float]]) -> None:
+        """Update neighbor pheromone strength data.
+
+        Args:
+            neighbor_strengths: Dictionary mapping pheromone types to lists of neighbor strengths
+        """
+        # This would be used for gradient calculation in a real implementation
+        # For now, store for testing
+        self.neighbor_pheromone_strengths = neighbor_strengths
+
+    def calculate_pheromone_gradients(self) -> dict[PheromoneType, float]:
+        """Calculate pheromone gradients based on neighbor data.
+
+        Returns:
+            Dictionary of pheromone gradients
+        """
+        gradients = {}
+
+        if hasattr(self, "neighbor_pheromone_strengths"):
+            for pheromone_type, strengths in self.neighbor_pheromone_strengths.items():
+                if strengths:
+                    # Simple gradient calculation: difference from average
+                    avg_strength = sum(strengths) / len(strengths)
+                    current_strength = self.pheromone_memory.get(pheromone_type, 0.0)
+                    gradient = avg_strength - current_strength
+                    gradients[pheromone_type] = max(-1.0, min(1.0, gradient))
+
+        return gradients
+
+    def update_spatial_pheromone_data(self, neighbor_data: list[dict[str, Any]]) -> None:
+        """Update spatial pheromone data with distance weighting.
+
+        Args:
+            neighbor_data: List of neighbor data with distance and pheromone information
+        """
+        self.spatial_pheromone_data = neighbor_data
+
+    def calculate_spatial_pheromone_response(self) -> float:
+        """Calculate distance-weighted pheromone response.
+
+        Returns:
+            Spatial pheromone response
+        """
+        if not hasattr(self, "spatial_pheromone_data"):
+            return 0.0
+
+        total_response = 0.0
+        total_weight = 0.0
+
+        for neighbor in self.spatial_pheromone_data:
+            distance = neighbor["distance"]
+            pheromones = neighbor["pheromone"]
+
+            # Distance weighting (closer neighbors have more influence)
+            weight = 1.0 / (1.0 + distance)
+
+            for pheromone_type, strength in pheromones.items():
+                response = self.calculate_pheromone_response(pheromone_type)
+                total_response += response * weight * strength
+                total_weight += weight
+
+        if total_weight > 0:
+            return total_response / total_weight
+        return 0.0
+
+    def calculate_local_stabilization_signal(self) -> dict[str, Any]:
+        """Calculate local stabilization signal as primary output.
+
+        Returns:
+            Dictionary containing local stabilization signal components
+        """
+        # Calculate individual components
+        frequency_support = self._calculate_frequency_response()
+        voltage_support = self.calculate_voltage_response()
+        pheromone_coordination = self.calculate_combined_pheromone_response()
+        soc_management = self._calculate_soc_management_response()
+
+        # Combine components with weights
+        frequency_weight = 0.35
+        voltage_weight = self.voltage_regulation_weight
+        pheromone_weight = self.coordination_weight
+        soc_weight = 0.15
+
+        total_power = (
+            frequency_weight * frequency_support
+            + voltage_weight * voltage_support
+            + pheromone_weight * pheromone_coordination
+            + soc_weight * soc_management
+        )
+
+        # Apply power limits
+        max_charge = self.battery.get_max_charge_power()
+        max_discharge = self.battery.get_max_discharge_power()
+
+        if total_power > 0:
+            total_power = min(total_power, max_charge)
+        else:
+            total_power = max(total_power, -max_discharge)
+
+        # Calculate confidence based on signal consistency
+        confidence = self._calculate_stabilization_confidence(
+            frequency_support, voltage_support, pheromone_coordination
+        )
+
+        # Calculate priority based on grid conditions
+        priority = self._calculate_stabilization_priority()
+
+        # Calculate response time based on urgency
+        response_time = self._calculate_response_time()
+
+        return {
+            "power_mw": total_power,
+            "voltage_support_mw": voltage_support,
+            "frequency_support_mw": frequency_support,
+            "pheromone_coordination_mw": pheromone_coordination,
+            "confidence": confidence,
+            "priority": priority,
+            "response_time_s": response_time,
+        }
+
+    def _calculate_stabilization_confidence(
+        self, frequency_support: float, voltage_support: float, pheromone_coordination: float
+    ) -> float:
+        """Calculate confidence in stabilization signal.
+
+        Args:
+            frequency_support: Frequency support component
+            voltage_support: Voltage support component
+            pheromone_coordination: Pheromone coordination component
+
+        Returns:
+            Confidence value (0.0 to 1.0)
+        """
+        # High confidence when signals are strong and consistent
+        signals = [frequency_support, voltage_support, pheromone_coordination]
+        signals = [s for s in signals if abs(s) > 0.001]  # Filter out near-zero signals
+
+        if not signals:
+            return 0.1  # Low confidence when no clear signals
+
+        # Check signal consistency (same direction)
+        positive_signals = sum(1 for s in signals if s > 0)
+        negative_signals = sum(1 for s in signals if s < 0)
+
+        consistency = max(positive_signals, negative_signals) / len(signals)
+
+        # Higher confidence with stronger signals (normalized by capacity)
+        signal_strength = min(1.0, sum(abs(s) for s in signals) / (len(signals) * self.battery.capacity_mw))
+
+        # Calculate grid condition strength (higher for clearer deviations)
+        voltage_deviation = abs(self.calculate_voltage_deviation())
+        frequency_deviation = 0.0
+        if hasattr(self, "current_frequency_hz"):
+            frequency_deviation = abs(self.current_frequency_hz - 60.0)
+
+        # Stronger grid conditions = higher confidence
+        voltage_strength = min(1.0, voltage_deviation / (self.voltage_deadband_v * 2 / 1000.0))
+        frequency_strength = min(1.0, frequency_deviation / 0.1)  # Normalize to 0.1 Hz
+        grid_condition_strength = max(voltage_strength, frequency_strength)
+
+        # Combine factors: consistency, signal strength, and grid condition clarity
+        confidence = 0.2 + 0.3 * consistency + 0.2 * signal_strength + 0.3 * grid_condition_strength
+        return min(1.0, max(0.0, confidence))
+
+    def _calculate_stabilization_priority(self) -> float:
+        """Calculate priority for stabilization actions.
+
+        Returns:
+            Priority value (0.0 to 1.0)
+        """
+        # Higher priority for larger deviations
+        voltage_deviation = abs(self.calculate_voltage_deviation())
+        voltage_priority = min(1.0, voltage_deviation / (self.voltage_deadband_v / 500.0))  # Normalize
+
+        frequency_priority = self.local_grid_stress
+
+        grid_priority = max(voltage_priority, frequency_priority)
+
+        # Battery readiness factor
+        soc_readiness = 1.0 - abs(self.battery.current_soc_percent - 50.0) / 50.0
+        health_readiness = self.battery.current_health_percent / 100.0
+
+        battery_readiness = 0.7 * soc_readiness + 0.3 * health_readiness
+
+        priority = 0.7 * grid_priority + 0.3 * battery_readiness
+        return min(1.0, max(0.0, priority))
+
+    def _calculate_response_time(self) -> float:
+        """Calculate response time for stabilization actions.
+
+        Returns:
+            Response time in seconds
+        """
+        # Faster response for emergency conditions
+        voltage_deviation = abs(self.calculate_voltage_deviation())
+        emergency_voltage_threshold = self.voltage_deadband_v * 8 / 1000.0  # 8x deadband for emergency
+        fast_voltage_threshold = self.voltage_deadband_v * 3 / 1000.0  # 3x deadband for fast
+
+        # Check frequency deviation for emergency
+        frequency_deviation = 0.0
+        if hasattr(self, "current_frequency_hz"):
+            frequency_deviation = abs(self.current_frequency_hz - 60.0)
+
+        # Emergency conditions: very high voltage/frequency deviation or very high grid stress
+        if (
+            voltage_deviation > emergency_voltage_threshold
+            or frequency_deviation > 0.25
+            or self.local_grid_stress > 0.9
+        ):
+            # Emergency response
+            return 0.2
+        elif voltage_deviation > fast_voltage_threshold or frequency_deviation > 0.1 or self.local_grid_stress > 0.6:
+            # Fast response
+            return 0.5
+        else:
+            # Normal response
+            return self.response_time_s
+
+    def execute_local_stabilization(self, stabilization_signal: dict[str, Any]) -> None:
+        """Execute local stabilization actions.
+
+        Args:
+            stabilization_signal: Stabilization signal from calculate_local_stabilization_signal
+        """
+        power_setpoint = stabilization_signal["power_mw"]
+
+        # Set battery power setpoint
+        self.battery.set_power_setpoint(power_setpoint)
+
+        # Update pheromone strength based on action
+        action_magnitude = abs(power_setpoint) / self.battery.capacity_mw
+        self.pheromone_strength = 0.8 * self.pheromone_strength + 0.2 * action_magnitude
+
+        logger.debug(
+            f"Agent {self.agent_id} executed stabilization: {power_setpoint:.2f} MW "
+            f"(confidence: {stabilization_signal['confidence']:.2f}, "
+            f"priority: {stabilization_signal['priority']:.2f})"
+        )
+
+    def get_enhanced_state(self) -> dict[str, Any]:
+        """Get enhanced agent state including voltage and pheromone information.
+
+        Returns:
+            Enhanced state dictionary
+        """
+        base_state = self.get_agent_state().model_dump()
+
+        enhanced_state = {
+            "voltage_deviation_v": self.calculate_voltage_deviation() * 1000.0,  # Convert to V
+            "pheromone_gradients": dict(self.pheromone_gradients),
+            "pheromone_memory": dict(self.pheromone_memory),
+            "stabilization_priority": self._calculate_stabilization_priority(),
+            "local_grid_conditions": {
+                "voltage_kv": self.current_voltage_kv,
+                "grid_stress": self.local_grid_stress,
+                "electricity_price": self.electricity_price,
+            },
+            "voltage_trigger_config": {
+                "deadband_v": self.voltage_deadband_v,
+                "sensitivity": self.voltage_trigger_sensitivity,
+                "regulation_weight": self.voltage_regulation_weight,
+            },
+        }
+
+        base_state.update(enhanced_state)
+        return base_state
 
     def update_swarm_signals(self, neighbor_signals: list[float]) -> None:
         """Update swarm coordination signals from neighboring agents.
@@ -163,25 +607,30 @@ class BatteryAgent:
 
         # Multi-objective optimization weights
         frequency_weight = 0.4
-        economic_weight = 0.3
+        voltage_weight = self.voltage_regulation_weight  # Use voltage regulation weight
+        economic_weight = 0.2
         coordination_weight = self.coordination_weight
-        soc_management_weight = 0.3
+        soc_management_weight = 0.2
 
         # 1. Frequency regulation objective
         frequency_response = self._calculate_frequency_response()
 
-        # 2. Economic optimization objective
+        # 2. Voltage regulation objective
+        voltage_response = self.calculate_voltage_response()
+
+        # 3. Economic optimization objective
         economic_response = self._calculate_economic_response(forecast_prices)
 
-        # 3. Swarm coordination objective
+        # 4. Swarm coordination objective
         coordination_response = self._calculate_coordination_response()
 
-        # 4. SoC management objective
+        # 5. SoC management objective
         soc_response = self._calculate_soc_management_response()
 
         # Combine objectives
         total_response = (
             frequency_weight * frequency_response
+            + voltage_weight * voltage_response
             + economic_weight * economic_response
             + coordination_weight * coordination_response
             + soc_management_weight * soc_response
@@ -203,9 +652,20 @@ class BatteryAgent:
         Returns:
             Power adjustment in MW for frequency support
         """
-        # This would use actual grid frequency in a real implementation
-        # For now, use local grid stress as a proxy
-        frequency_response = -self.local_grid_stress * self.battery.capacity_mw * 0.5
+        # Calculate frequency deviation from nominal
+        nominal_frequency = 60.0  # Hz
+        # Use stored frequency if available, otherwise use grid stress proxy
+        if hasattr(self, "current_frequency_hz"):
+            frequency_deviation = self.current_frequency_hz - nominal_frequency
+        else:
+            # Fallback to grid stress proxy (negative stress means low frequency)
+            frequency_deviation = self.local_grid_stress * 0.5
+
+        # Frequency response logic:
+        # High frequency (>60 Hz) -> charge (positive power) to absorb energy
+        # Low frequency (<60 Hz) -> discharge (negative power) to provide energy
+        frequency_response = frequency_deviation * self.battery.capacity_mw * 0.5
+
         return frequency_response
 
     def _calculate_economic_response(self, forecast_prices: list[float]) -> MW:
@@ -237,8 +697,15 @@ class BatteryAgent:
         Returns:
             Power adjustment in MW for swarm coordination
         """
-        # Respond to coordination signal from swarm
-        coordination_response = self.coordination_signal * self.battery.capacity_mw * 0.2
+        # Enhanced coordination using pheromone responses
+        pheromone_response = self.calculate_combined_pheromone_response()
+
+        # Traditional coordination signal
+        basic_coordination = self.coordination_signal * self.battery.capacity_mw * 0.2
+
+        # Combine both approaches
+        coordination_response = 0.6 * pheromone_response + 0.4 * basic_coordination
+
         return coordination_response
 
     def _calculate_soc_management_response(self) -> MW:
@@ -350,6 +817,8 @@ class BatteryAgent:
         self.local_grid_stress = 0.0
         self.coordination_signal = 0.0
         self.neighbor_signals.clear()
+        self.pheromone_memory.clear()
+        self.pheromone_gradients.clear()
 
     def __str__(self) -> str:
         """String representation of the battery agent."""
