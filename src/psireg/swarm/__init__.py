@@ -11,6 +11,8 @@ The primary components include:
 
 from .agents.battery_agent import BatteryAgent
 from .agents.demand_agent import DemandAgent
+from .agents.solar_agent import SolarAgent
+from .agents.wind_agent import WindAgent
 from .pheromone import (
     GridPosition,
     PheromoneField,
@@ -27,4 +29,6 @@ __all__ = [
     # Agent classes
     "BatteryAgent",
     "DemandAgent",
+    "SolarAgent",
+    "WindAgent",
 ]
