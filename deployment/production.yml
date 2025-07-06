@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  psireg-datafeed:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      - ENV=production
+      - LOG_LEVEL=info
+      - CACHE_SIZE_MB=500
+      - CACHE_TTL_SECONDS=7200
+      - MAX_WORKERS=8
+      - BATCH_SIZE=2000
+      - DATA_VALIDATION_ENABLED=true
+      - COMPRESSION_LEVEL=9
+      - MEMORY_LIMIT_MB=4000
+      - PARQUET_STORAGE_PATH=/data/parquet
+      - CSV_STORAGE_PATH=/data/csv
+      - WEATHER_API_KEY=${WEATHER_API_KEY}
+      - WEATHER_API_TIMEOUT=60
+      - WEATHER_API_RETRIES=5
+    volumes:
+      - psireg-data:/data
+      - psireg-logs:/app/logs
+      - ./config:/app/config
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import psireg.sim.datafeed; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    resource_limits:
+      memory: 4G
+      cpus: '4.0'
+    resource_reservations:
+      memory: 2G
+      cpus: '2.0'
+
+  redis-cache:
+    image: redis:7-alpine
+    environment:
+      - REDIS_MAXMEMORY=1G
+      - REDIS_MAXMEMORY_POLICY=allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    resource_limits:
+      memory: 1.5G
+      cpus: '1.0'
+
+  monitoring:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=90d'
+      - '--web.enable-lifecycle'
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    depends_on:
+      - monitoring
+
+volumes:
+  psireg-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-./data}
+  psireg-logs:
+    driver: local
+  redis-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16 
