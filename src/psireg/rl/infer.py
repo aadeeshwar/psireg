@@ -98,6 +98,7 @@ class GridPredictor:
         # Performance tracking
         self.prediction_history: list[dict[str, Any]] = []
         self.performance_metrics: dict[str, float] = {}
+        self.max_history_length = 1000  # Limit prediction history to prevent memory issues
 
         # Load model and configuration
         self._load_model()
@@ -207,25 +208,71 @@ class GridPredictor:
         if self.model is None:
             raise RuntimeError("Model not loaded")
 
-        # Get observation
+        # Validate and get observation
         if observation is None:
+            if grid_state is None:
+                raise ValueError("Either observation or grid_state must be provided")
             if self.grid_env is None:
                 raise RuntimeError("GridEnv not set up. Call setup_environment() first")
             observation = self.grid_env._get_observation()
+        else:
+            # Validate observation format
+            if not isinstance(observation, np.ndarray):
+                try:
+                    observation = np.array(observation, dtype=np.float32)
+                except (ValueError, TypeError) as e:
+                    raise ValueError(f"Invalid observation format: {e}") from e
 
-        # Ensure observation is in correct format
-        if not isinstance(observation, np.ndarray):
-            observation = np.array(observation, dtype=np.float32)
+            # Check for invalid values
+            if observation.size == 0:
+                raise ValueError("Observation cannot be empty")
 
+            if not np.isfinite(observation).all():
+                raise ValueError("Observation contains non-finite values (NaN or inf)")
+
+        # Record prediction start time
+        start_time = datetime.now()
+
+        # Ensure observation is in correct format for model
         if len(observation.shape) == 1:
             observation = observation.reshape(1, -1)
 
-        # Predict action
-        start_time = datetime.now()
+        # Make prediction
         action, _ = self.model.predict(observation, deterministic=deterministic)
+
+        # Calculate prediction time
         prediction_time = (datetime.now() - start_time).total_seconds()
 
-        # Prepare prediction info
+        # Update performance metrics
+        self.performance_metrics.update(
+            {
+                "total_predictions": self.performance_metrics.get("total_predictions", 0) + 1,
+                "last_prediction_time_s": prediction_time,
+                "avg_prediction_time_s": (
+                    self.performance_metrics.get("avg_prediction_time_s", 0) * 0.9 + prediction_time * 0.1
+                ),
+            }
+        )
+
+        # Store prediction in history
+        if len(self.prediction_history) >= self.max_history_length:
+            self.prediction_history.pop(0)
+
+        self.prediction_history.append(
+            {
+                "observation": observation.copy(),
+                "action": action.copy(),
+                "info": {
+                    "timestamp": datetime.now().isoformat(),
+                    "deterministic": deterministic,
+                    "prediction_time_s": prediction_time,
+                    "observation_shape": observation.shape,
+                    "action_shape": action.shape,
+                }.copy(),
+            }
+        )
+
+        # Create prediction info
         prediction_info = {
             "timestamp": datetime.now().isoformat(),
             "deterministic": deterministic,
@@ -234,20 +281,7 @@ class GridPredictor:
             "action_shape": action.shape,
         }
 
-        # Store in history
-        self.prediction_history.append(
-            {
-                "observation": observation.copy(),
-                "action": action.copy(),
-                "info": prediction_info.copy(),
-            }
-        )
-
-        # Keep history limited to last 1000 predictions
-        if len(self.prediction_history) > 1000:
-            self.prediction_history = self.prediction_history[-1000:]
-
-        return action.flatten(), prediction_info
+        return action, prediction_info
 
     def predict_batch(
         self,
@@ -278,13 +312,20 @@ class GridPredictor:
 
         total_time = (datetime.now() - start_time).total_seconds()
 
-        # Update performance metrics
+        # Update performance metrics - handle empty batch case
+        if len(observations) > 0:
+            avg_prediction_time = total_time / len(observations)
+            predictions_per_second = len(observations) / total_time if total_time > 0 else 0
+        else:
+            avg_prediction_time = 0.0
+            predictions_per_second = 0.0
+
         self.performance_metrics.update(
             {
                 "batch_size": len(observations),
                 "total_batch_time_s": total_time,
-                "avg_prediction_time_s": total_time / len(observations),
-                "predictions_per_second": len(observations) / total_time if total_time > 0 else 0,
+                "avg_prediction_time_s": avg_prediction_time,
+                "predictions_per_second": predictions_per_second,
             }
         )
 

@@ -25,10 +25,14 @@ _RL_AVAILABLE = (
 if _RL_AVAILABLE:
     from .env import GridEnv
     from .infer import GridPredictor
+    from .predictive_layer import PredictiveLayer
     from .train import PPOTrainer
 
-    __all__ = ["GridEnv", "PPOTrainer", "GridPredictor"]
+    __all__ = ["GridEnv", "PPOTrainer", "GridPredictor", "PredictiveLayer"]
 else:
-    __all__ = []
+    # Always import PredictiveLayer as it has fallback functionality
+    from .predictive_layer import PredictiveLayer
+
+    __all__ = ["PredictiveLayer"]
 
 __version__ = "0.1.0"
