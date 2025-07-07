@@ -19,6 +19,10 @@ scikit-learn = "^1.5.0"
 gymnasium = "^0.29.1"
 stable-baselines3 = "^2.2.1"
 torch = "^2.0.0"
+typer = {version = "^0.12.0", extras = ["rich"]}
+
+[tool.poetry.scripts]
+psi = "psireg.cli.cli:main"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.4.2"
