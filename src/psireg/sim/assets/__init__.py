@@ -8,6 +8,7 @@ from .base import Asset
 from .battery import Battery
 from .load import Load
 from .solar import SolarPanel
+from .thermal import CoalPlant, NaturalGasPlant, NuclearPlant, ThermalPlant
 from .wind import WindTurbine
 
 __all__ = [
@@ -16,4 +17,8 @@ __all__ = [
     "Load",
     "SolarPanel",
     "WindTurbine",
+    "ThermalPlant",
+    "CoalPlant",
+    "NaturalGasPlant",
+    "NuclearPlant",
 ]

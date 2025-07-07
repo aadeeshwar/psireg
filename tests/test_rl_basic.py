@@ -44,9 +44,10 @@ class TestRLModuleStructure:
             assert "GridEnv" in available_classes
             assert "PPOTrainer" in available_classes
             assert "GridPredictor" in available_classes
+            assert "PredictiveLayer" in available_classes
         else:
-            # If not available, should be empty
-            assert len(available_classes) == 0
+            # If not available, should only have PredictiveLayer (fallback implementation)
+            assert available_classes == ["PredictiveLayer"]
 
     def test_rl_config_integration(self):
         """Test integration with RLConfig from config schema."""

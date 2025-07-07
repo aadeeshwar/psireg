@@ -438,29 +438,44 @@ class TestRenewableAgentsDemo:
         except ImportError:
             pytest.skip("Demo not available for testing")
 
-    @patch("matplotlib.pyplot.show")
-    @patch("matplotlib.pyplot.savefig")
-    def test_demo_execution(self, mock_savefig, mock_show):
+    def test_demo_execution(self, mock_savefig=None, mock_show=None):
         """Test demo execution."""
         try:
             from examples.renewable_agents_demo import RenewableAgentsDemo
 
-            # Create demo
-            demo = RenewableAgentsDemo()
+            # Only patch matplotlib if it's available
+            try:
+                import matplotlib.pyplot as plt
 
-            # Run short demo
-            results = demo.run_coordination_demo(time_steps=6)
+                with patch.object(plt, "show") as _, patch.object(plt, "savefig") as _:
+                    # Create demo
+                    demo = RenewableAgentsDemo()
 
-            # Check results
-            assert len(results) == 6
-            assert all("demand_responses" in result for result in results)
-            assert all("total_demand_response_mw" in result for result in results)
+                    # Run short demo
+                    results = demo.run_coordination_demo(time_steps=6)
 
-            # Test summary
-            demo.print_summary()
+                    # Check results
+                    assert len(results) == 6
+                    assert all("demand_responses" in result for result in results)
+                    assert all("total_demand_response_mw" in result for result in results)
 
-            # Test visualization (mocked)
-            demo.create_visualizations()
+                    # Test summary
+                    demo.print_summary()
+
+                    # Test visualization (mocked)
+                    demo.create_visualizations()
+            except ImportError:
+                # matplotlib not available, run without visualization
+                demo = RenewableAgentsDemo()
+                results = demo.run_coordination_demo(time_steps=6)
+
+                # Check results
+                assert len(results) == 6
+                assert all("demand_responses" in result for result in results)
+                assert all("total_demand_response_mw" in result for result in results)
+
+                # Test summary
+                demo.print_summary()
 
         except ImportError:
             pytest.skip("Demo not available for testing")
