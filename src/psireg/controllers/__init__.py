@@ -34,6 +34,13 @@ except ImportError:
     pass
 
 try:
+    from .psi import PSIController  # noqa: F401
+
+    __all__.append("PSIController")
+except ImportError:
+    pass
+
+try:
     from .comparison import ComparisonMetrics, ControllerComparison  # noqa: F401
 
     __all__.extend(["ControllerComparison", "ComparisonMetrics"])

@@ -62,7 +62,10 @@ class RLConfig(BaseModel):
     model_path: str = Field(default="models/rl_model.pkl", description="Path to save/load RL model")
     training_episodes: int = Field(default=1000, ge=1, le=1000000, description="Number of training episodes")
     prediction_horizon: int = Field(
-        default=24, ge=1, le=168, description="Prediction horizon in hours"  # 1 week maximum
+        default=24,
+        ge=1,
+        le=168,
+        description="Prediction horizon in hours",  # 1 week maximum
     )
 
 

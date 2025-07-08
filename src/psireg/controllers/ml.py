@@ -1,7 +1,7 @@
 """ML-only controller for renewable energy grid control.
 
 This module implements machine learning-based grid control using
-reinforcement learning models and the existing GridPredictor framework.
+reinforcement learning models and the existing PredictiveLayer framework.
 """
 
 import time
@@ -12,7 +12,7 @@ import numpy as np
 
 from psireg.controllers.base import BaseController
 from psireg.rl.env import GridEnv
-from psireg.rl.predictive_layer import GridPredictor
+from psireg.rl.predictive_layer import PredictiveLayer
 from psireg.sim.engine import GridEngine, GridState
 from psireg.utils.enums import AssetType
 from psireg.utils.logger import logger
@@ -30,7 +30,7 @@ class MLController(BaseController):
     - Continuous learning and adaptation
     - Performance monitoring and validation
 
-    The controller acts as a wrapper around the existing GridPredictor
+    The controller acts as a wrapper around the existing PredictiveLayer
     and GridEnv components, providing a unified interface for ML-based
     grid control.
     """
@@ -111,22 +111,16 @@ class MLController(BaseController):
                 logger.warning(f"Failed to initialize GridEnv: {env_error}")
                 self.grid_env = None
 
-            # Initialize GridPredictor for predictive analytics
+            # Initialize PredictiveLayer for predictive analytics
             # Only create predictor if model path is provided
             if self.model_path:
                 try:
-                    # Try positional argument first (for compatibility with tests)
-                    try:
-                        self.predictor = GridPredictor(self.model_path)
-                    except TypeError:
-                        # Fall back to keyword argument
-                        self.predictor = GridPredictor(model_path=self.model_path)
-
-                    # Try to load the model
-                    self._attempt_model_loading()
+                    # Use PredictiveLayer.load_model for initialization
+                    self.predictor = PredictiveLayer.load_model(self.model_path)
+                    self.model_loaded = self.predictor.is_ready
 
                 except Exception as pred_error:
-                    logger.warning(f"Failed to initialize GridPredictor: {pred_error}")
+                    logger.warning(f"Failed to initialize PredictiveLayer: {pred_error}")
                     self.predictor = None
                     self.fallback_mode = True
             else:
@@ -217,38 +211,16 @@ class MLController(BaseController):
                 # Increment prediction counter
                 self.total_predictions += 1
 
-                # Try predict_with_confidence first for confidence tracking
-                if hasattr(self.predictor, "predict_with_confidence"):
-                    try:
-                        prediction_result = self.predictor.predict_with_confidence(
-                            self.current_observation.reshape(1, -1)
-                        )
-                        if isinstance(prediction_result, tuple) and len(prediction_result) == 2:
-                            prediction, confidence = prediction_result
-                            # Update confidence tracking
-                            if isinstance(confidence, int | float):
-                                self.prediction_confidence = float(confidence)
-                                # Set flag to prevent overwriting in _update_prediction_metrics
-                                self._confidence_updated_this_cycle = True
-                            if isinstance(prediction, list | np.ndarray):
-                                # The original code had a bug here, it was trying to return a prediction
-                                # that was already flattened. The original code was:
-                                # if isinstance(prediction, (list, np.ndarray)):
-                                #     return np.array(prediction).flatten()
-                                # This was incorrect. The prediction_result itself is the flattened array.
-                                # The original code was trying to flatten it again.
-                                # The correct line should be:
-                                # return np.array(prediction_result).flatten()
-                                return np.array(prediction_result).flatten()
-                    except Exception as e:
-                        logger.debug(f"Error using predict_with_confidence: {e}")
-                        # Fall through to regular predict method
-
-                # Fall back to regular predict method
+                # Use PredictiveLayer's predict method
                 if hasattr(self.predictor, "predict"):
-                    prediction = self.predictor.predict(self.current_observation.reshape(1, -1))
-                    if isinstance(prediction, list | np.ndarray):
-                        return np.array(prediction).flatten()
+                    try:
+                        # Get prediction from ML model
+                        _ = self.predictor.predict(self.current_observation)
+                        # Update confidence - PredictiveLayer doesn't provide confidence, so use default
+                        self.prediction_confidence = 0.8  # Default confidence for loaded models
+                    except Exception as e:
+                        logger.debug(f"Error during prediction: {e}")
+                        self.prediction_confidence = 0.0
 
             except Exception as e:
                 logger.debug(f"Error during prediction update: {e}")
@@ -459,28 +431,14 @@ class MLController(BaseController):
                 # Increment prediction counter
                 self.total_predictions += 1
 
-                # Try predict_with_confidence first for confidence tracking
-                if hasattr(self.predictor, "predict_with_confidence"):
-                    try:
-                        prediction_result = self.predictor.predict_with_confidence(observation.reshape(1, -1))
-                        if isinstance(prediction_result, tuple) and len(prediction_result) == 2:
-                            prediction, confidence = prediction_result
-                            # Update confidence tracking
-                            if isinstance(confidence, int | float):
-                                self.prediction_confidence = float(confidence)
-                                # Set flag to prevent overwriting in _update_prediction_metrics
-                                self._confidence_updated_this_cycle = True
-                            if isinstance(prediction, list | np.ndarray):
-                                return np.array(prediction).flatten()
-                    except Exception as e:
-                        logger.debug(f"Error using predict_with_confidence: {e}")
-                        # Fall through to regular predict method
-
-                # Fall back to regular predict method
+                # Use PredictiveLayer's predict method
                 if hasattr(self.predictor, "predict"):
-                    prediction = self.predictor.predict(observation.reshape(1, -1))
+                    prediction = self.predictor.predict(observation)
                     if isinstance(prediction, list | np.ndarray):
                         return np.array(prediction).flatten()
+
+                    # Update confidence for successful predictions
+                    self.prediction_confidence = 0.8
 
             except Exception as e:
                 logger.warning(f"Error predicting action: {e}")

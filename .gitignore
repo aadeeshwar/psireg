@@ -250,3 +250,40 @@ build/
 
 # Project-specific
 # Add any project-specific files or directories to ignore here 
+
+# PSI Controller Study Outputs
+# Generated study directories
+demo_study/
+validation_study/
+*_study/
+*_study_*/
+
+# Generated output directories
+output/
+test_output/
+results/
+data/
+
+# Generated reports and visualizations
+psi_controller_analysis.html
+psi_summary_dashboard.png
+*_analysis.html
+*_dashboard.png
+*_report.html
+*_summary.png
+
+# Generated markdown reports
+COMPLETE_PSI_STUDY_SUMMARY.md
+PSI_CONTROLLER_RESULTS.md
+validation_comparison_report.md
+*_STUDY_*.md
+*_RESULTS.md
+*_comparison_report.md
+
+# Generated data files
+*.parquet
+*.feather
+
+# Temporary analysis files
+comprehensive_analysis/
+comprehensive_visualizations/ 
