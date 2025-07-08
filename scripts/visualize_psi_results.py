@@ -73,7 +73,7 @@ class PSIVisualizationSuite:
         fig = make_subplots(
             rows=2, cols=3,
             subplot_titles=[
-                'Fossil Backup Energy (MWh)', 'Grid Stability Score',
+                'Fossil Backup Power (MW)', 'Grid Stability Score',
                 'Frequency Deviation (Hz)', 'Voltage Deviation (V)',
                 'Renewable Utilization (%)', 'Overall Performance Score'
             ],
@@ -83,22 +83,31 @@ class PSIVisualizationSuite:
         
         controllers = kpis['controller'].unique()
         
+        # Get grouped data with consistent ordering
+        fossil_backup_data = kpis.groupby('controller')['avg_fossil_backup_mw'].mean()
+        
         # Fossil backup
         fig.add_trace(
             go.Bar(
                 x=[CONTROLLER_NAMES[c] for c in controllers],
-                y=kpis.groupby('controller')['total_fossil_backup_mwh'].mean(),
+                y=[fossil_backup_data[c] for c in controllers],
                 name='Fossil Backup',
                 marker_color=[CONTROLLER_COLORS[c] for c in controllers]
             ),
             row=1, col=1
         )
         
+        # Get all grouped data with consistent ordering
+        grid_stability_data = kpis.groupby('controller')['grid_stability_score'].mean()
+        frequency_deviation_data = kpis.groupby('controller')['avg_frequency_deviation_hz'].mean()
+        voltage_deviation_data = kpis.groupby('controller')['avg_voltage_deviation_v'].mean()
+        renewable_utilization_data = kpis.groupby('controller')['renewable_utilization_pct'].mean()
+        
         # Grid stability
         fig.add_trace(
             go.Bar(
                 x=[CONTROLLER_NAMES[c] for c in controllers],
-                y=kpis.groupby('controller')['grid_stability_score'].mean(),
+                y=[grid_stability_data[c] for c in controllers],
                 name='Grid Stability',
                 marker_color=[CONTROLLER_COLORS[c] for c in controllers],
                 showlegend=False
@@ -110,7 +119,7 @@ class PSIVisualizationSuite:
         fig.add_trace(
             go.Bar(
                 x=[CONTROLLER_NAMES[c] for c in controllers],
-                y=kpis.groupby('controller')['avg_frequency_deviation_hz'].mean(),
+                y=[frequency_deviation_data[c] for c in controllers],
                 name='Frequency Dev',
                 marker_color=[CONTROLLER_COLORS[c] for c in controllers],
                 showlegend=False
@@ -122,7 +131,7 @@ class PSIVisualizationSuite:
         fig.add_trace(
             go.Bar(
                 x=[CONTROLLER_NAMES[c] for c in controllers],
-                y=kpis.groupby('controller')['avg_voltage_deviation_v'].mean(),
+                y=[voltage_deviation_data[c] for c in controllers],
                 name='Voltage Dev',
                 marker_color=[CONTROLLER_COLORS[c] for c in controllers],
                 showlegend=False
@@ -134,7 +143,7 @@ class PSIVisualizationSuite:
         fig.add_trace(
             go.Bar(
                 x=[CONTROLLER_NAMES[c] for c in controllers],
-                y=kpis.groupby('controller')['renewable_utilization_pct'].mean(),
+                y=[renewable_utilization_data[c] for c in controllers],
                 name='Renewable Util',
                 marker_color=[CONTROLLER_COLORS[c] for c in controllers],
                 showlegend=False
@@ -188,7 +197,7 @@ class PSIVisualizationSuite:
             fig.add_trace(
                 go.Bar(
                     x=[CONTROLLER_NAMES[c] for c in scenario_data['controller']],
-                    y=scenario_data['total_fossil_backup_mwh'],
+                    y=scenario_data['avg_fossil_backup_mw'],
                     name=f'Fossil Backup - {scenario}',
                     marker_color=[CONTROLLER_COLORS[c] for c in scenario_data['controller']],
                     showlegend=(i == 1)
@@ -197,9 +206,9 @@ class PSIVisualizationSuite:
             )
         
         fig.update_layout(
-            title="Fossil Backup Energy by Scenario (Lower is Better)",
+            title="Fossil Backup Power by Scenario (Lower is Better)",
             height=500,
-            yaxis_title="Fossil Backup (MWh)"
+            yaxis_title="Fossil Backup (MW)"
         )
         
         output_file = self.output_dir / "scenario_analysis.html"
@@ -309,7 +318,7 @@ class PSIVisualizationSuite:
         kpis = self._calculate_kpis()
         
         # Calculate PSI improvements vs each baseline
-        metrics = ['total_fossil_backup_mwh', 'avg_frequency_deviation_hz', 
+        metrics = ['avg_fossil_backup_mw', 'avg_frequency_deviation_hz', 
                   'avg_voltage_deviation_v', 'grid_stability_score']
         
         improvements = []
@@ -378,14 +387,14 @@ class PSIVisualizationSuite:
         
         kpis = self._calculate_kpis()
         # Only calculate mean for numeric columns
-        numeric_cols = ['total_fossil_backup_mwh', 'avg_frequency_deviation_hz', 
+        numeric_cols = ['avg_fossil_backup_mw', 'avg_frequency_deviation_hz', 
                        'avg_voltage_deviation_v', 'renewable_utilization_pct', 'grid_stability_score']
         overall_kpis = kpis.groupby('controller')[numeric_cols].mean()
         
         # Normalize metrics for radar chart (0-100 scale)
         metrics = {
-            'Efficiency': 100 - (overall_kpis['total_fossil_backup_mwh'] / 
-                                overall_kpis['total_fossil_backup_mwh'].max() * 100),
+            'Efficiency': 100 - (overall_kpis['avg_fossil_backup_mw'] / 
+                                overall_kpis['avg_fossil_backup_mw'].max() * 100),
             'Frequency Stability': 100 - (overall_kpis['avg_frequency_deviation_hz'] / 
                                          overall_kpis['avg_frequency_deviation_hz'].max() * 100),
             'Voltage Stability': 100 - (overall_kpis['avg_voltage_deviation_v'] / 
@@ -454,7 +463,10 @@ class PSIVisualizationSuite:
         # Frequency deviation box plot
         for controller in controllers:
             controller_data = self.df[self.df['controller'] == controller]
-            freq_dev = abs(controller_data['frequency_hz'] - 60.0)
+            if 'frequency_deviation_hz' in controller_data.columns:
+                freq_dev = controller_data['frequency_deviation_hz']
+            else:
+                freq_dev = abs(controller_data['frequency_hz'] - 60.0)  # Use 60 Hz nominal
             fig.add_trace(
                 go.Box(
                     y=freq_dev,
@@ -468,7 +480,10 @@ class PSIVisualizationSuite:
         # Voltage deviation box plot
         for controller in controllers:
             controller_data = self.df[self.df['controller'] == controller]
-            voltage_dev = abs(controller_data['voltage_v'] - 230.0)
+            if 'voltage_deviation_v' in controller_data.columns:
+                voltage_dev = controller_data['voltage_deviation_v']
+            else:
+                voltage_dev = abs(controller_data['voltage_v'] - 230.0)
             fig.add_trace(
                 go.Box(
                     y=voltage_dev,
@@ -514,7 +529,7 @@ class PSIVisualizationSuite:
         
         kpis = self._calculate_kpis()
         # Only calculate mean for numeric columns
-        numeric_cols = ['total_fossil_backup_mwh', 'avg_frequency_deviation_hz', 
+        numeric_cols = ['avg_fossil_backup_mw', 'avg_frequency_deviation_hz', 
                        'avg_voltage_deviation_v', 'renewable_utilization_pct', 'grid_stability_score']
         overall_kpis = kpis.groupby('controller')[numeric_cols].mean()
         
@@ -523,9 +538,9 @@ class PSIVisualizationSuite:
         colors = [CONTROLLER_COLORS[c] for c in controllers]
         
         # 1. Fossil backup comparison
-        axes[0, 0].bar(controller_labels, overall_kpis['total_fossil_backup_mwh'], color=colors)
-        axes[0, 0].set_title('Average Fossil Backup Energy')
-        axes[0, 0].set_ylabel('Energy (MWh)')
+        axes[0, 0].bar(controller_labels, overall_kpis['avg_fossil_backup_mw'], color=colors)
+        axes[0, 0].set_title('Average Fossil Backup Power')
+        axes[0, 0].set_ylabel('Power (MW)')
         axes[0, 0].tick_params(axis='x', rotation=45)
         
         # 2. Grid stability scores
@@ -547,13 +562,13 @@ class PSIVisualizationSuite:
         
         for i, controller in enumerate(controllers):
             controller_data = kpis[kpis['controller'] == controller]
-            values = [controller_data[controller_data['scenario'] == s]['total_fossil_backup_mwh'].iloc[0] 
+            values = [controller_data[controller_data['scenario'] == s]['avg_fossil_backup_mw'].iloc[0] 
                      for s in scenarios]
             axes[1, 0].bar(x + i * width, values, width, label=CONTROLLER_NAMES[controller], 
                           color=CONTROLLER_COLORS[controller])
         
         axes[1, 0].set_title('Fossil Backup by Scenario')
-        axes[1, 0].set_ylabel('Energy (MWh)')
+        axes[1, 0].set_ylabel('Power (MW)')
         axes[1, 0].set_xlabel('Scenario')
         axes[1, 0].set_xticks(x + width * 1.5)
         axes[1, 0].set_xticklabels([s.replace('_', ' ').title() for s in scenarios])
@@ -613,18 +628,35 @@ class PSIVisualizationSuite:
                 if len(subset) == 0:
                     continue
                 
-                # Calculate KPIs
+                # Calculate KPIs to match statistical analysis methodology
                 total_curtailed_mwh = subset['curtailed_mw'].sum() * time_step_hours
-                total_fossil_backup_mwh = subset['fossil_backup_mw'].sum() * time_step_hours
-                avg_freq_deviation_hz = abs(subset['frequency_hz'] - 60.0).mean()
-                avg_voltage_deviation_v = abs(subset['voltage_v'] - 230.0).mean()
+                
+                # FIX 1: Use average MW instead of total MWh for fossil backup 
+                # to match statistical summary which shows fossil_backup_mw_mean
+                avg_fossil_backup_mw = subset['fossil_backup_mw'].mean()
+                
+                # FIX 2: Use the actual frequency deviation values from data
+                # Statistical summary uses 'frequency_deviation_hz' which are already deviations
+                if 'frequency_deviation_hz' in subset.columns:
+                    avg_freq_deviation_hz = subset['frequency_deviation_hz'].mean()
+                else:
+                    # Fallback: calculate deviation from nominal frequency (60 Hz for US grid)
+                    avg_freq_deviation_hz = abs(subset['frequency_hz'] - 60.0).mean()
+                
+                # FIX 3: Use the actual voltage deviation values from data  
+                # Statistical summary uses 'voltage_deviation_v' which are already deviations
+                if 'voltage_deviation_v' in subset.columns:
+                    avg_voltage_deviation_v = subset['voltage_deviation_v'].mean()
+                else:
+                    # Fallback: calculate deviation from nominal voltage (230V)
+                    avg_voltage_deviation_v = abs(subset['voltage_v'] - 230.0).mean()
                 
                 # Renewable utilization
                 total_renewable = subset['solar_mw'].sum() + subset['wind_mw'].sum()
                 renewable_used = total_renewable - subset['curtailed_mw'].sum()
                 renewable_utilization = (renewable_used / total_renewable * 100) if total_renewable > 0 else 0
                 
-                # Grid stability score
+                # Grid stability score - using the correct deviation values
                 freq_stability_score = max(0, 100 - (avg_freq_deviation_hz / 0.1 * 100))
                 voltage_stability_score = max(0, 100 - (avg_voltage_deviation_v / 10.0 * 100))
                 grid_stability_score = (freq_stability_score + voltage_stability_score) / 2
@@ -633,7 +665,7 @@ class PSIVisualizationSuite:
                     'controller': controller,
                     'scenario': scenario,
                     'total_curtailed_mwh': total_curtailed_mwh,
-                    'total_fossil_backup_mwh': total_fossil_backup_mwh,
+                    'avg_fossil_backup_mw': avg_fossil_backup_mw,  # Changed from total_fossil_backup_mwh
                     'avg_frequency_deviation_hz': avg_freq_deviation_hz,
                     'avg_voltage_deviation_v': avg_voltage_deviation_v,
                     'renewable_utilization_pct': renewable_utilization,
@@ -645,15 +677,15 @@ class PSIVisualizationSuite:
     def _calculate_overall_scores(self, kpis: pd.DataFrame) -> Dict[str, float]:
         """Calculate overall performance scores."""
         # Only calculate mean for numeric columns
-        numeric_cols = ['total_fossil_backup_mwh', 'avg_frequency_deviation_hz', 
+        numeric_cols = ['avg_fossil_backup_mw', 'avg_frequency_deviation_hz', 
                        'avg_voltage_deviation_v', 'renewable_utilization_pct', 'grid_stability_score']
         overall_kpis = kpis.groupby('controller')[numeric_cols].mean()
         
         scores = {}
         for controller in overall_kpis.index:
             # Composite score (0-100)
-            efficiency_score = 100 - (overall_kpis.loc[controller, 'total_fossil_backup_mwh'] / 
-                                    overall_kpis['total_fossil_backup_mwh'].max() * 100)
+            efficiency_score = 100 - (overall_kpis.loc[controller, 'avg_fossil_backup_mw'] / 
+                                    overall_kpis['avg_fossil_backup_mw'].max() * 100)
             stability_score = overall_kpis.loc[controller, 'grid_stability_score']
             renewable_score = overall_kpis.loc[controller, 'renewable_utilization_pct']
             
@@ -665,16 +697,16 @@ class PSIVisualizationSuite:
     def _calculate_psi_improvements(self, kpis: pd.DataFrame) -> Dict[str, float]:
         """Calculate PSI improvements over baselines."""
         # Only calculate mean for numeric columns
-        numeric_cols = ['total_fossil_backup_mwh', 'avg_frequency_deviation_hz', 
+        numeric_cols = ['avg_fossil_backup_mw', 'avg_frequency_deviation_hz', 
                        'avg_voltage_deviation_v', 'renewable_utilization_pct', 'grid_stability_score']
         overall_kpis = kpis.groupby('controller')[numeric_cols].mean()
         
-        psi_fossil = overall_kpis.loc['psi', 'total_fossil_backup_mwh']
+        psi_fossil = overall_kpis.loc['psi', 'avg_fossil_backup_mw']
         improvements = {}
         
         for baseline in ['rule', 'ml', 'swarm']:
             if baseline in overall_kpis.index:
-                baseline_fossil = overall_kpis.loc[baseline, 'total_fossil_backup_mwh']
+                baseline_fossil = overall_kpis.loc[baseline, 'avg_fossil_backup_mw']
                 improvement = ((baseline_fossil - psi_fossil) / baseline_fossil * 100)
                 improvements[baseline.upper()] = improvement
         
