@@ -6,7 +6,7 @@
 
 **PSIREG is an advanced research platform demonstrating the superiority of Predictive Swarm Intelligence (PSI) controllers for next-generation renewable energy grid management.**
 
-## 🚀 Quick Start - Complete Study
+## Quick Start - Complete Study
 
 Run the entire PSI controller research study with a single command:
 
@@ -21,7 +21,7 @@ This generates a complete research package including:
 - ✅ **Research Reports** - Executive summaries and detailed findings
 - ✅ **Stakeholder Package** - Ready for presentations and peer review
 
-## 📊 Study Output Structure
+## Study Output Structure
 
 ```
 study_results/psi_study_YYYYMMDD_HHMMSS/
@@ -32,7 +32,7 @@ study_results/psi_study_YYYYMMDD_HHMMSS/
 └── README.md       # Study summary and navigation guide
 ```
 
-## 🎯 Key Research Findings
+## Key Research Findings
 
 The PSI controller demonstrates **definitive superiority** across all metrics:
 
@@ -43,7 +43,7 @@ The PSI controller demonstrates **definitive superiority** across all metrics:
 | **Renewable Utilization** | 8-12% increase | p < 0.001 |
 | **Curtailment Reduction** | 60-80% reduction | p < 0.001 |
 
-## 📈 Visualization Highlights
+## Visualization Highlights
 
 The study generates multiple visualization types:
 
@@ -53,7 +53,7 @@ The study generates multiple visualization types:
 - **🔥 Improvement Heatmaps** - PSI advantages across scenarios
 - **📋 Statistical Summaries** - Distribution analysis and confidence intervals
 
-## 🔬 Study Methodology
+## Study Methodology
 
 ### Controllers Evaluated
 1. **PSI Controller** - Predictive Swarm Intelligence (proposed)
@@ -73,7 +73,7 @@ The study generates multiple visualization types:
 - **Effect Size**: Cohen's d for practical significance
 - **Confidence Intervals**: 95% CI for all key metrics
 
-## 🎓 Academic & Commercial Use
+## Academic & Commercial Use
 
 ### For Researchers
 - **Thesis Documentation** - Complete methodology and results
@@ -87,7 +87,7 @@ The study generates multiple visualization types:
 - **Technical Validation** - Rigorous scientific methodology
 - **Implementation Guidance** - Practical deployment considerations
 
-## ⚙️ Advanced Usage
+## Advanced Usage
 
 ### Custom Output Directory
 ```bash
@@ -111,7 +111,7 @@ python scripts/analyze_results.py output/psi_evaluation_*.parquet
 python scripts/visualize_psi_results.py output/psi_evaluation_*.parquet
 ```
 
-## 🛠️ Development Setup
+## Development Setup
 
 For developers extending the platform:
 
@@ -142,7 +142,7 @@ gradle cov      # Coverage report
 gradle build    # Complete build pipeline
 ```
 
-## 📚 Research Impact
+## Research Impact
 
 ### Novel Contributions
 - **First successful ML + Swarm fusion** for grid control
@@ -156,7 +156,7 @@ gradle build    # Complete build pipeline
 - **48% reduction** in fossil backup vs swarm-only methods
 - **Superior grid stability** with 15-25% improvement in key metrics
 
-## 📄 License & Citation
+## License & Citation
 
 MIT License - see `LICENSE` file for details.
 
@@ -166,7 +166,7 @@ PSIREG: Predictive Swarm Intelligence for Renewable Energy Grids
 [Institution/Publication details to be added]
 ```
 
-## 🤝 Support
+## Support
 
 For questions about the research findings or technical implementation:
 1. Review the generated study reports in `study_results/`
